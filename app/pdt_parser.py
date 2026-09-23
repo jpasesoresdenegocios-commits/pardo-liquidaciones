@@ -1,24 +1,37 @@
-"""Lee el PDF de detalle del PDT 621 (IGV-Renta Mensual) YA GUARDADO en
-Supabase Storage (declaraciones_pdt.url_detalle) y saca las casillas reales
-que declaro el contribuyente -- para que la Evolucion Compras-Ventas se
-llene con lo REALMENTE declarado, no con la propuesta SIRE (que puede traer
+"""Lee el detalle del PDT 621 (IGV-Renta Mensual) YA GUARDADO en Supabase
+Storage (declaraciones_pdt.url_detalle) y saca las casillas reales que
+declaro el contribuyente -- para que la Evolucion Compras-Ventas se llene
+con lo REALMENTE declarado, no con la propuesta SIRE (que puede traer
 comprobantes que el contador nunca tomo).
 
-Confirmado en vivo el 2026-09-23 con un PDF real de DIABETES (202608): el
-texto que saca pdfplumber es 'etiqueta casilla valor [casilla2 valor2]' muy
-regular, ej. 'Ventas Netas 100 283,772.00 101 51,079.00'. Las casillas del
-formulario 0621 son ESTANDAR de SUNAT (mismo numero en todo el pais), asi
-que estos numeros de casilla no cambian entre empresas ni periodos.
+Soporta 2 formatos de 'detalle', detectados por la extension de la URL:
+- .pdf (el caso normal): texto extraido con pdfplumber, formato regular
+  'etiqueta casilla valor [casilla2 valor2]', confirmado en vivo el
+  2026-09-23 con un PDF real de DIABETES (202608).
+- .csv (fallback, 2026-09-23): a veces SUNAT no genera un detalle
+  descargable para una declaracion ya presentada ("al consultar no nos da
+  el detalle" -- confirmado con DIABETES 202503, que tiene constancia pero
+  url_detalle=NULL en declaraciones_pdt). Para esos casos el despacho
+  obtiene un export alterno de SUNAT con las mismas casillas en CSV
+  (columnas 'Nro Casilla'/'Valor Casilla', una fila por casilla) -- se
+  sube ese CSV a Storage y se usa como url_detalle en su lugar.
+
+Las casillas del formulario 0621 son ESTANDAR de SUNAT (mismo numero en
+todo el pais), asi que estos numeros de casilla no cambian entre empresas
+ni periodos.
 
 Regla de "cual declaracion es la valida" (pedido explicito del usuario):
 una empresa puede tener Original + Sustitutoria + Rectificatoria para el
 mismo periodo -- SUNAT asigna num_orden en orden creciente, asi que la de
 mayor num_orden es siempre la mas reciente/definitiva, sea cual sea su
 'Tipo de Declaracion' (ese texto tambien se extrae, solo para mostrarlo)."""
+import csv
+import io
 import re
+
 import httpx
 import pdfplumber
-import io
+
 from .supabase_client import sb
 
 CASILLAS = {
@@ -31,6 +44,7 @@ CASILLAS = {
     "igv_compras": "178",           # TOTAL credito fiscal
     "ingresos_netos": "301",        # Base de Renta = ventas_gravadas + ventas_no_gravadas
     "renta_resultante": "302",      # Impuesto Resultante o Saldo a Favor (Renta)
+    "coeficiente_aplicado": "315",  # Coeficiente o Porcentaje efectivamente aplicado ese mes
 }
 
 
@@ -49,21 +63,21 @@ def _tipo_declaracion(texto):
     return m.group(1) if m else None
 
 
-def parsear_pdt_pdf(pdf_bytes):
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        texto = "\n".join(p.extract_text() or "" for p in pdf.pages)
+def _armar_resultado(valores, tipo_declaracion):
+    """valores: dict {casilla_str: float}, ya sea sacado del PDF o del CSV."""
+    def v(clave):
+        return valores.get(CASILLAS[clave], 0.0)
 
-    ventas_gravadas = _num(texto, CASILLAS["ventas_gravadas"])
-    ventas_no_gravadas = _num(texto, CASILLAS["ventas_no_gravadas"])
-    compras_gravadas = _num(texto, CASILLAS["compras_gravadas"])
-    compras_no_gravadas = _num(texto, CASILLAS["compras_no_gravadas"])
-
+    ventas_gravadas = v("ventas_gravadas")
+    ventas_no_gravadas = v("ventas_no_gravadas")
+    compras_gravadas = v("compras_gravadas")
+    compras_no_gravadas = v("compras_no_gravadas")
     return {
-        "tipo_declaracion": _tipo_declaracion(texto),
+        "tipo_declaracion": tipo_declaracion,
         "ventas_gravadas": ventas_gravadas,
         "ventas_no_gravadas": ventas_no_gravadas,
-        "ventas_total": _num(texto, CASILLAS["ingresos_netos"]) or (ventas_gravadas + ventas_no_gravadas),
-        "igv_ventas": _num(texto, CASILLAS["igv_ventas"]),
+        "ventas_total": v("ingresos_netos") or (ventas_gravadas + ventas_no_gravadas),
+        "igv_ventas": v("igv_ventas"),
         "compras_gravadas": compras_gravadas,
         "compras_no_gravadas": compras_no_gravadas,
         # OJO: no existe una sola casilla oficial de "compras total" en el
@@ -72,9 +86,43 @@ def parsear_pdt_pdf(pdf_bytes):
         # afuera; para las ~65 empresas del despacho esto no se ha visto
         # todavia, pero queda documentado por si aparece.
         "compras_total": compras_gravadas + compras_no_gravadas,
-        "igv_compras": _num(texto, CASILLAS["igv_compras"]),
-        "renta_resultante": _num(texto, CASILLAS["renta_resultante"]),
+        "igv_compras": v("igv_compras"),
+        "renta_resultante": v("renta_resultante"),
+        # Tasa (coeficiente o 1%) que SUNAT registra como aplicada ese mes
+        # -- informativo; NO se usa todavia para decidir la tasa del mes
+        # que se esta calculando (ver igv_renta.regla_300_uit), porque un
+        # valor de 1.0 aqui puede significar "se uso el piso de 1%", no
+        # necesariamente el coeficiente real de la empresa.
+        "coeficiente_aplicado": v("coeficiente_aplicado"),
     }
+
+
+def parsear_pdt_pdf(pdf_bytes):
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        texto = "\n".join(p.extract_text() or "" for p in pdf.pages)
+    valores = {casilla: _num(texto, casilla) for casilla in CASILLAS.values()}
+    return _armar_resultado(valores, _tipo_declaracion(texto))
+
+
+def parsear_pdt_csv(csv_bytes):
+    """Formato real confirmado (export alterno de SUNAT, 2026-09-23):
+    cabecera 'Nro Ruc,Nro Orden,Formulario,Periodo,Fecha Presentacion,
+    Indicador Rectif,Nro Casilla,Valor Casilla', una fila por casilla,
+    numeros con punto decimal y sin separador de miles."""
+    texto = csv_bytes.decode("utf-8-sig", errors="replace")
+    lector = csv.DictReader(io.StringIO(texto))
+    valores = {}
+    indicador_rectif = None
+    for fila in lector:
+        casilla = (fila.get("Nro Casilla") or "").strip().lstrip("0") or "0"
+        valor = (fila.get("Valor Casilla") or "").strip()
+        indicador_rectif = fila.get("Indicador Rectif", indicador_rectif)
+        try:
+            valores[casilla] = float(valor)
+        except ValueError:
+            continue
+    tipo = {"0": "ORIGINAL", "1": "RECTIFICATORIA"}.get((indicador_rectif or "").strip(), None)
+    return _armar_resultado(valores, tipo)
 
 
 def declaracion_final(empresa_id, periodo, cod_formulario="0621"):
@@ -93,17 +141,20 @@ def declaracion_final(empresa_id, periodo, cod_formulario="0621"):
 
 def obtener_evolucion_mes(empresa_id, periodo):
     """Devuelve lo declarado en el PDT final de ese mes, o None si la
-    empresa no tiene PDT 621 para ese periodo (ej. mes aun no declarado).
+    empresa no tiene PDT 621 para ese periodo (mes aun no declarado, o
+    declarado pero sin detalle descargable y sin CSV de respaldo todavia).
     'compras_gravadas'/'compras_no_gravadas' van separados (no pre-sumados)
     porque el template real de Evolucion Anual/Mensual las muestra en
     columnas distintas ('Gravados'/'No gravados'), confirmado contra el
     Excel real de MEDISALUD (columnas H/I de la hoja AF (ULTIMO))."""
     decl = declaracion_final(empresa_id, periodo)
-    if not decl or not decl.get("url_detalle"):
+    url = decl and decl.get("url_detalle")
+    if not url:
         return None
-    resp = httpx.get(decl["url_detalle"], timeout=30)
+    resp = httpx.get(url, timeout=30)
     resp.raise_for_status()
-    datos = parsear_pdt_pdf(resp.content)
+    parser = parsear_pdt_csv if url.lower().split("?")[0].endswith(".csv") else parsear_pdt_pdf
+    datos = parser(resp.content)
     return {
         "ventas": datos["ventas_total"],
         "compras": datos["compras_total"],

@@ -105,9 +105,18 @@ def _periodo_anterior(periodo):
     return f"{a}{m:02d}"
 
 
-def _mes_anterior_tupla(anio, mes):
-    m = mes - 1
-    return (anio - 1, 12) if m < 1 else (anio, m)
+def _normalizar_fraccion_pct(v):
+    """Las 3 fuentes de coeficiente historico (liquidaciones_impuestos
+    guardada, su arrastre, o renta_coeficientes) guardan la tasa como
+    PORCENTAJE (1.5 = 1.5%), nunca como fraccion -- se normaliza una sola
+    vez aqui. Bug real detectado 2026-09-23: sin este fix, regla_300_uit()
+    comparaba 1.5 contra 0.015 y devolvia 1.5 sin convertir, asi que el
+    Excel mostraba "150.00%" en la celda de Coeficiente y la Renta salia
+    100x mas grande (507,479 en vez de 5,075)."""
+    if v is None:
+        return None
+    v = float(v)
+    return v / 100 if v > 1 else v
 
 
 def regla_300_uit(ventas_acumuladas_anio, anio, coef_historico):
@@ -117,7 +126,10 @@ def regla_300_uit(ventas_acumuladas_anio, anio, coef_historico):
     adelante en todo el ejercicio se paga el MAYOR entre el coeficiente
     propio y 1.5% (Art. 85 LIR modificado). Verificado contra el Excel real:
     D59=300*UIT, D61 marca 'SUPERO 1.5% O COEF' cuando D34 (ventas acum.) >
-    D59 -- y ese mes E59(Coeficiente)=1.5% en vez de 0."""
+    D59 -- y ese mes E59(Coeficiente)=1.5% en vez de 0.
+
+    'coef_historico' DEBE venir ya normalizado a fraccion (0.015, no 1.5)
+    -- ver _normalizar_fraccion_pct()."""
     limite = 300 * uit_del_anio(anio)
     supero_300_uit = ventas_acumuladas_anio > limite
     if not supero_300_uit:
@@ -162,6 +174,7 @@ def calcular(ruc, empresa_id, periodo):
             "fecha_presentacion", desc=True).limit(1))
         if coef:
             coef_historico = coef[0]["coeficiente_pct"]
+    coef_historico = _normalizar_fraccion_pct(coef_historico)
 
     # Regla 300 UIT: ingresos netos acumulados del ejercicio (Enero..mes
     # actual) sumando lo declarado en cada PDT 621 ya presentado. Usa la
@@ -182,12 +195,7 @@ def calcular(ruc, empresa_id, periodo):
         ventas_acum = r_ventas["base_total"]  # sin PDT declarado todavia: usa la propuesta del propio mes
 
     regla_uit = regla_300_uit(ventas_acum, anio_periodo, coef_historico)
-    renta_tasa = (coef_historico / 100 if regla_uit["usa_coeficiente"] and coef_historico and coef_historico > 1
-                  else regla_uit["tasa"])
-    # coef_historico puede venir guardado como porcentaje entero (1.5) o
-    # como fraccion (0.015) segun la fuente -- se normaliza a fraccion.
-    if renta_tasa > 1:
-        renta_tasa = renta_tasa / 100
+    renta_tasa = regla_uit["tasa"]
 
     rp = _maybe(sb.table("retenciones_percepciones_igv").select("tipo,monto_propio").eq(
         "empresa_id", empresa_id).eq("periodo", periodo)) or []
