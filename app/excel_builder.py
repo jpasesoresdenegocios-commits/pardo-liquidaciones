@@ -2,15 +2,17 @@
 2026-09-23 celda por celda contra el archivo real de DIABETES
 ('Liquidacion de impuestos 202608-Diabetes E.I.R.L..xlsx', hojas
 'IGV-RENTA' y 'AF (ULTIMO)'): mismos colores exactos (naranja FFF5811E,
-turquesa FF76D8E3, celeste claro FFDAEEF3), mismas formulas de Excel (no
-valores ya calculados en Python -- asi si alguien corrige un numero a mano
-el resto se recalcula solo), mismo detalle de Compras por tasa (18%/10.5%,
-Internas/Importadas), misma regla RMT de 300 UIT, mismo par de graficos
-(1 de barras 'Evolucion Anual' con 4 series, 1 de lineas 'Evolucion Mensual'
-con 2 series, ubicados AL LADO de su tabla, no debajo) y mismo formato
-condicional (MIN=rojo/MAX=verde por columna, barras de datos en las
-columnas Total), sin lineas de cuadricula pero con bordes finos alrededor
-de cada tabla de datos."""
+turquesa FF76D8E3, celeste claro FFDAEEF3), misma fuente (Century Gothic),
+numeros centrados, zoom 73%, mismas formulas de Excel (no valores ya
+calculados en Python -- asi si alguien corrige un numero a mano el resto se
+recalcula solo), mismo detalle de Compras por tasa (18%/10.5%, Internas/
+Importadas), misma regla RMT de 300 UIT, bordes finos alrededor de cada
+tabla (las cuadriculas de la hoja quedan apagadas).
+
+2026-09-23 (cambio de alcance): por pedido explicito, el endpoint solo
+genera la hoja IGV-RENTA (preliquidacion) -- la hoja de Evolucion queda
+pausada (no se borra el codigo, solo se deja de invocar) hasta que se
+retome ese tema por separado."""
 import io
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -31,7 +33,7 @@ MESES_CORTO = {"01": "Enero", "02": "Febrero", "03": "Marzo", "04": "Abril", "05
                "06": "Junio", "07": "Julio", "08": "Agosto", "09": "Setiembre",
                "10": "Octubre", "11": "Noviembre", "12": "Diciembre"}
 
-# Colores EXACTOS sacados del archivo real (no aproximados).
+# Colores y tipografia EXACTOS sacados del archivo real (no aproximados).
 NARANJA = "FFF5811E"
 TURQUESA = "FF76D8E3"
 CELESTE_CLARO = "FFDAEEF3"
@@ -41,6 +43,7 @@ VERDE_CF = "C6EFCE"
 AMARILLO_FLAG = "FFFFFF00"
 ROJO_FONT = "FFFF0000"
 TEAL_TEXTO = "FF005C74"
+FUENTE = "Century Gothic"
 
 FMT_BASE = "#,##0"
 FMT_TRIBUTO = "#,##0.00"
@@ -49,6 +52,7 @@ FMT_EVOL = "#,##0.00"
 
 _BORDE_FINO = Side(style="thin", color="FFBFBFBF")
 _BORDE = Border(left=_BORDE_FINO, right=_BORDE_FINO, top=_BORDE_FINO, bottom=_BORDE_FINO)
+_CENTRO = Alignment(horizontal="center")
 
 
 def _fmt(n):
@@ -63,11 +67,11 @@ def _franja(ws, fila, col_ini, col_fin, texto, color, blanco=True):
     for c in range(col_ini, col_fin + 1):
         celda = ws.cell(row=fila, column=c)
         celda.fill = PatternFill("solid", fgColor=color)
-        celda.font = Font(bold=True, color="FFFFFFFF" if blanco else "FF000000")
+        celda.font = Font(name=FUENTE, bold=True, color="FFFFFFFF" if blanco else "FF000000")
     ws.cell(row=fila, column=col_ini, value=texto)
     if col_fin > col_ini:
         ws.merge_cells(start_row=fila, start_column=col_ini, end_row=fila, end_column=col_fin)
-    ws.cell(row=fila, column=col_ini).alignment = Alignment(horizontal="center")
+    ws.cell(row=fila, column=col_ini).alignment = _CENTRO
 
 
 def _bordes(ws, fila_ini, fila_fin, col_ini, col_fin):
@@ -124,6 +128,7 @@ def _hoja_igv_renta(wb, calc, branding, logo_bytes):
     ws = wb.active
     ws.title = "IGV-RENTA"
     ws.sheet_view.showGridLines = False
+    ws.sheet_view.zoomScale = 73
     v, c = calc["ventas"], calc["compras"]
     ct = c["por_tasa"]
 
@@ -137,14 +142,18 @@ def _hoja_igv_renta(wb, calc, branding, logo_bytes):
                    ("F", 16), ("G", 16), ("H", 14), ("I", 14)]:
         ws.column_dimensions[col].width = w
 
-    def val(row, col, value=None, fmt=None, bold=False, color=None, fill=None):
+    def val(row, col, value=None, fmt=None, bold=False, color=None, fill=None, centrado=None):
         cell = ws.cell(row=row, column=col, value=value)
         if fmt:
             cell.number_format = fmt
-        if bold or color:
-            cell.font = Font(bold=bold, color=color)
+        cell.font = Font(name=FUENTE, bold=bold, color=color)
         if fill:
             cell.fill = PatternFill("solid", fgColor=fill)
+        # Los numeros van centrados en el Excel real (no a la derecha, que
+        # es el default de Excel) -- se activa solo cuando hay formato
+        # numerico, salvo que se pida explicitamente lo contrario.
+        if (fmt and centrado is not False) or centrado:
+            cell.alignment = _CENTRO
         return cell
 
     # --- Encabezado ---
@@ -165,13 +174,13 @@ def _hoja_igv_renta(wb, calc, branding, logo_bytes):
     f_igv_cp_banda = fila
     _franja(ws, fila, 2, 9, "IGV CUENTA PROPIA", NARANJA)
     fila += 1
-    val(fila, 2, "DESCRIPCIÓN", bold=True, color="FFFFFFFF", fill=TURQUESA)
+    val(fila, 2, "DESCRIPCIÓN", bold=True, color="FFFFFFFF", fill=TURQUESA, centrado=False)
     ws.merge_cells(start_row=fila, start_column=2, end_row=fila, end_column=6)
     for cc in range(3, 7):
         ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=TURQUESA)
-    val(fila, 7, "BASE", bold=True, color="FFFFFFFF", fill=TURQUESA)
-    val(fila, 8, "TRIBUTO", bold=True, color="FFFFFFFF", fill=TURQUESA)
-    val(fila, 9, "TOTAL", bold=True, color="FFFFFFFF", fill=TURQUESA)
+    val(fila, 7, "BASE", bold=True, color="FFFFFFFF", fill=TURQUESA, centrado=True)
+    val(fila, 8, "TRIBUTO", bold=True, color="FFFFFFFF", fill=TURQUESA, centrado=True)
+    val(fila, 9, "TOTAL", bold=True, color="FFFFFFFF", fill=TURQUESA, centrado=True)
     fila += 1
 
     _franja(ws, fila, 2, 9, "VENTAS", CELESTE_CLARO, blanco=False)
@@ -179,13 +188,13 @@ def _hoja_igv_renta(wb, calc, branding, logo_bytes):
     f_vg = fila
     val(fila, 2, "(+)", bold=True)
     val(fila, 3, "Gravadas")
-    val(fila, 4, "Ventas netas")
+    val(fila, 4, "Ventas netas", centrado=False)
     ws.merge_cells(start_row=fila, start_column=4, end_row=fila, end_column=6)
     val(fila, 7, _fmt(v["base_gravada"]), fmt=FMT_BASE)
     val(fila, 8, f"=ROUND(G{fila}*18%,0)", fmt=FMT_TRIBUTO)
     val(fila, 9, f"=G{fila}+H{fila}", fmt=FMT_BASE)
     fila += 1
-    val(fila, 4, "Descuentos concedidos y/o devoluciones de ventas")
+    val(fila, 4, "Descuentos concedidos y/o devoluciones de ventas", centrado=False)
     ws.merge_cells(start_row=fila, start_column=4, end_row=fila, end_column=6)
     val(fila, 7, 0, fmt=FMT_BASE)
     val(fila, 8, f"=ROUND(G{fila}*18%,0)", fmt=FMT_TRIBUTO)
@@ -194,7 +203,7 @@ def _hoja_igv_renta(wb, calc, branding, logo_bytes):
     f_vng = fila
     val(fila, 2, "(+)", bold=True)
     val(fila, 3, "No Gravadas")
-    val(fila, 4, "Ventas netas")
+    val(fila, 4, "Ventas netas", centrado=False)
     ws.merge_cells(start_row=fila, start_column=4, end_row=fila, end_column=6)
     val(fila, 7, _fmt(v["no_gravado"]), fmt=FMT_BASE)
     val(fila, 9, f"=+G{fila}", fmt=FMT_BASE)
@@ -216,7 +225,7 @@ def _hoja_igv_renta(wb, calc, branding, logo_bytes):
         f_int = fila
         val(fila, 2, signo, bold=True)
         val(fila, 3, tipo)
-        val(fila, 4, "Compras netas - Internas")
+        val(fila, 4, "Compras netas - Internas", centrado=False)
         ws.merge_cells(start_row=fila, start_column=4, end_row=fila, end_column=6)
         val(fila, 7, _fmt(base["internas"]), fmt=FMT_BASE)
         if tasa_pct is not None:
@@ -224,7 +233,7 @@ def _hoja_igv_renta(wb, calc, branding, logo_bytes):
         val(fila, 9, f"=G{fila}+H{fila}", fmt=FMT_BASE)
         fila += 1
         f_imp = fila
-        val(fila, 4, "Compras netas - Importadas")
+        val(fila, 4, "Compras netas - Importadas", centrado=False)
         ws.merge_cells(start_row=fila, start_column=4, end_row=fila, end_column=6)
         val(fila, 7, _fmt(base["importadas"]), fmt=FMT_BASE)
         if tasa_pct is not None:
@@ -251,23 +260,23 @@ def _hoja_igv_renta(wb, calc, branding, logo_bytes):
     f_det_igv_banda = fila
     _franja(ws, fila, 2, 9, "DETERMINACIÓN DE LA DEUDA TRIBUTARIA - IGV", NARANJA)
     fila += 1
-    val(fila, 2, "DESCRIPCIÓN", bold=True, color="FFFFFFFF", fill=TURQUESA)
+    val(fila, 2, "DESCRIPCIÓN", bold=True, color="FFFFFFFF", fill=TURQUESA, centrado=False)
     ws.merge_cells(start_row=fila, start_column=2, end_row=fila, end_column=8)
     for cc in range(3, 9):
         ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=TURQUESA)
-    val(fila, 9, "TRIBUTO", bold=True, color="FFFFFFFF", fill=TURQUESA)
+    val(fila, 9, "TRIBUTO", bold=True, color="FFFFFFFF", fill=TURQUESA, centrado=True)
     fila += 1
 
     def _fila_i(signo, etq, formula_o_valor, negrita=False, gris=False):
         nonlocal fila
         r = fila
         val(fila, 2, signo)
-        cc = val(fila, 3, etq)
+        cc = val(fila, 3, etq, centrado=False)
         ws.merge_cells(start_row=fila, start_column=3, end_row=fila, end_column=8)
         cv = val(fila, 9, formula_o_valor, fmt=FMT_TRIBUTO)
         if negrita:
-            cc.font = Font(bold=True)
-            cv.font = Font(bold=True)
+            cc.font = Font(name=FUENTE, bold=True)
+            cv.font = Font(name=FUENTE, bold=True)
         if gris:
             for c2 in range(2, 10):
                 ws.cell(row=fila, column=c2).fill = PatternFill("solid", fgColor=CELESTE_CLARO)
@@ -318,19 +327,19 @@ def _hoja_igv_renta(wb, calc, branding, logo_bytes):
     fila += 1
     regla = calc["renta_regla_300_uit"]
     f_coef = fila
-    val(fila, 3, "Coeficiente")
+    val(fila, 3, "Coeficiente", centrado=False)
     val(fila, 5, (regla["tasa"] if regla["usa_coeficiente"] else 0), fmt=FMT_PCT)
     fila += 1
     f_pct = fila
-    val(fila, 3, "Porcentaje")
+    val(fila, 3, "Porcentaje", centrado=False)
     val(fila, 5, 0.01, fmt=FMT_PCT)
     fila += 1
-    val(fila, 2, "DESCRIPCIÓN", bold=True, fill=RESUMEN_BG)
-    val(fila, 7, "BASE", bold=True, fill=RESUMEN_BG)
-    val(fila, 9, "TRIBUTO", bold=True, fill=RESUMEN_BG)
+    val(fila, 2, "DESCRIPCIÓN", bold=True, fill=RESUMEN_BG, centrado=False)
+    val(fila, 7, "BASE", bold=True, fill=RESUMEN_BG, centrado=True)
+    val(fila, 9, "TRIBUTO", bold=True, fill=RESUMEN_BG, centrado=True)
     fila += 1
     f_ingresos = fila
-    val(fila, 2, "Ingresos Netos")
+    val(fila, 2, "Ingresos Netos", centrado=False)
     val(fila, 7, f"=+G{f_vtot}", fmt=FMT_TRIBUTO)
     val(fila, 9, f"=ROUND(IF(E{f_coef}=0,G{f_ingresos}*E{f_pct},G{f_ingresos}*E{f_coef}),0)", fmt=FMT_TRIBUTO)
     _bordes(ws, f_renta_cat_banda, f_ingresos, 2, 9)
@@ -339,11 +348,11 @@ def _hoja_igv_renta(wb, calc, branding, logo_bytes):
     f_det_renta_banda = fila
     _franja(ws, fila, 2, 9, "DETERMINACIÓN DE LA DEUDA TRIBUTARIA - RENTA", TURQUESA)
     fila += 1
-    val(fila, 2, "DESCRIPCIÓN", bold=True, color="FFFFFFFF", fill=TURQUESA)
+    val(fila, 2, "DESCRIPCIÓN", bold=True, color="FFFFFFFF", fill=TURQUESA, centrado=False)
     ws.merge_cells(start_row=fila, start_column=2, end_row=fila, end_column=8)
     for cc in range(3, 9):
         ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=TURQUESA)
-    val(fila, 9, "TRIBUTO", bold=True, color="FFFFFFFF", fill=TURQUESA)
+    val(fila, 9, "TRIBUTO", bold=True, color="FFFFFFFF", fill=TURQUESA, centrado=True)
     fila += 1
 
     f_renta_pagar = _fila_i("(-)", f'=+IF(I{fila}>0,"Impuesto a pagar","Saldo a favor del mes")',
@@ -353,7 +362,7 @@ def _hoja_igv_renta(wb, calc, branding, logo_bytes):
     _fila_i("(-)", "Saldo a favor del periodo anterior", saldo_ant_renta)
     if saldo_ant_renta:
         ws.cell(row=f_renta_saldoant, column=9).fill = PatternFill("solid", fgColor=AMARILLO_FLAG)
-        ws.cell(row=f_renta_saldoant, column=9).font = Font(color=ROJO_FONT)
+        ws.cell(row=f_renta_saldoant, column=9).font = Font(name=FUENTE, color=ROJO_FONT)
     f_renta_trib1 = fila
     _fila_i("", f'=IF(I{fila}>0,"Tributo a pagar","Saldo a favor")',
             f"=+I{f_renta_pagar}+I{f_renta_saldoant}", negrita=True, gris=True)
@@ -378,16 +387,16 @@ def _hoja_igv_renta(wb, calc, branding, logo_bytes):
     _franja(ws, fila, 2, 9, "RESUMEN DEUDA TRIBUTARIA", RESUMEN_BG, blanco=False)
     fila += 1
     for c_idx, txt in [(2, "TRIBUTO"), (3, "CÓDIGO"), (5, "IMPORTE"), (6, "ESTADO")]:
-        val(fila, c_idx, txt, bold=True)
+        val(fila, c_idx, txt, bold=True, centrado=False)
     fila += 1
     f_res_igv = fila
-    val(fila, 2, "IGV", bold=True)
+    val(fila, 2, "IGV", bold=True, centrado=False)
     val(fila, 3, 1011, bold=True)
     val(fila, 5, f"=I{f_igv_total}", fmt=FMT_TRIBUTO, fill=CELESTE_CLARO)
     val(fila, 6, f'=IF(E{fila}>0,"POR PAGAR","SALDO A FAVOR")')
     fila += 1
     f_res_renta = fila
-    val(fila, 2, "RENTA", bold=True)
+    val(fila, 2, "RENTA", bold=True, centrado=False)
     val(fila, 3, 3121, bold=True)
     val(fila, 5, f"=I{f_renta_total}", fmt=FMT_TRIBUTO)
     val(fila, 6, f'=IF(E{fila}>0,"POR PAGAR","SALDO A FAVOR")')
@@ -400,21 +409,24 @@ def _hoja_igv_renta(wb, calc, branding, logo_bytes):
 
 
 # ---------------------------------------------------------------------
-# HOJA AF (ULTIMO) -- Evolución
+# HOJA AF (ULTIMO) -- Evolución (2026-09-23: pausada por pedido explicito,
+# el codigo se deja intacto para retomarla mas adelante -- ver
+# construir_workbook()).
 # ---------------------------------------------------------------------
 
 def _hoja_evolucion(wb, branding, calc_ruc, anio_base, anio_anterior, datos_por_anio, mes_actual):
     ws = wb.create_sheet("AF (ULTIMO)")
     ws.sheet_view.showGridLines = False
+    ws.sheet_view.zoomScale = 73
     for col, w in [("A", 2.5), ("B", 15), ("C", 20), ("D", 16), ("E", 11), ("F", 11),
                    ("G", 3), ("H", 15), ("I", 15), ("J", 17), ("K", 15), ("L", 15),
                    ("M", 17), ("N", 14), ("O", 11), ("P", 3)]:
         ws.column_dimensions[col].width = w
 
-    ws.cell(row=1, column=2, value="RAZÓN SOCIAL:").font = Font(bold=True, size=10)
-    ws.cell(row=1, column=3, value=branding["nombre"]).font = Font(bold=True, size=10, color=TEAL_TEXTO)
-    ws.cell(row=2, column=2, value="RUC:").font = Font(bold=True, size=10)
-    ws.cell(row=2, column=3, value=calc_ruc).font = Font(bold=True, size=10)
+    ws.cell(row=1, column=2, value="RAZÓN SOCIAL:").font = Font(name=FUENTE, bold=True, size=10)
+    ws.cell(row=1, column=3, value=branding["nombre"]).font = Font(name=FUENTE, bold=True, size=10, color=TEAL_TEXTO)
+    ws.cell(row=2, column=2, value="RUC:").font = Font(name=FUENTE, bold=True, size=10)
+    ws.cell(row=2, column=3, value=calc_ruc).font = Font(name=FUENTE, bold=True, size=10)
 
     def sval(anio, mes_idx, clave):
         d = datos_por_anio.get(anio, [None] * 12)[mes_idx]
@@ -430,23 +442,23 @@ def _hoja_evolucion(wb, branding, calc_ruc, anio_base, anio_anterior, datos_por_
     _franja(ws, fila, 2, 15, "EVOLUCIÓN ANUAL", NARANJA)
     fila += 1
     ws.merge_cells(start_row=fila, start_column=2, end_row=fila, end_column=6)
-    ws.cell(row=fila, column=2, value="Ventas").font = Font(bold=True, color="FFFFFFFF")
+    ws.cell(row=fila, column=2, value="Ventas").font = Font(name=FUENTE, bold=True, color="FFFFFFFF")
     ws.merge_cells(start_row=fila, start_column=8, end_row=fila, end_column=13)
-    ws.cell(row=fila, column=8, value="Compras").font = Font(bold=True, color="FFFFFFFF")
+    ws.cell(row=fila, column=8, value="Compras").font = Font(name=FUENTE, bold=True, color="FFFFFFFF")
     for cc in list(range(2, 7)) + list(range(8, 14)):
         ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=TURQUESA)
     fila += 1
     f_hdr_mes = fila
     ws.merge_cells(start_row=fila, start_column=3, end_row=fila, end_column=4)
-    ws.cell(row=fila, column=3, value="Año").font = Font(bold=True)
+    ws.cell(row=fila, column=3, value="Año").font = Font(name=FUENTE, bold=True)
     ws.merge_cells(start_row=fila, start_column=5, end_row=fila, end_column=6)
-    ws.cell(row=fila, column=5, value="Variación").font = Font(bold=True)
+    ws.cell(row=fila, column=5, value="Variación").font = Font(name=FUENTE, bold=True)
     ws.merge_cells(start_row=fila, start_column=8, end_row=fila, end_column=10)
-    ws.cell(row=fila, column=8, value=f"Año {anio_ant_txt}").font = Font(bold=True)
+    ws.cell(row=fila, column=8, value=f"Año {anio_ant_txt}").font = Font(name=FUENTE, bold=True)
     ws.merge_cells(start_row=fila, start_column=11, end_row=fila, end_column=13)
-    ws.cell(row=fila, column=11, value=f"Año {anio_base}").font = Font(bold=True)
+    ws.cell(row=fila, column=11, value=f"Año {anio_base}").font = Font(name=FUENTE, bold=True)
     ws.merge_cells(start_row=fila, start_column=14, end_row=fila, end_column=15)
-    ws.cell(row=fila, column=14, value="Variación").font = Font(bold=True)
+    ws.cell(row=fila, column=14, value="Variación").font = Font(name=FUENTE, bold=True)
     for cc in [3, 5, 8, 11, 14]:
         ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=TURQUESA)
     fila += 1
@@ -456,7 +468,7 @@ def _hoja_evolucion(wb, branding, calc_ruc, anio_base, anio_anterior, datos_por_
                  14: "Soles", 15: "%"}
     for cc, txt in cabeceras.items():
         cel = ws.cell(row=fila, column=cc, value=txt)
-        cel.font = Font(bold=True)
+        cel.font = Font(name=FUENTE, bold=True)
         cel.fill = PatternFill("solid", fgColor=TURQUESA)
     fila += 1
 
@@ -482,11 +494,11 @@ def _hoja_evolucion(wb, branding, calc_ruc, anio_base, anio_anterior, datos_por_
     f_datos_fin = fila - 1
 
     f_total_anual = fila
-    ws.cell(row=fila, column=2, value="Total General").font = Font(bold=True)
+    ws.cell(row=fila, column=2, value="Total General").font = Font(name=FUENTE, bold=True)
     for cc in (3, 4, 8, 9, 10, 11, 12, 13):
         letra = ws.cell(row=fila, column=cc).column_letter
         ws.cell(row=fila, column=cc, value=f"=SUBTOTAL(9,{letra}{f_datos_ini}:{letra}{f_datos_fin})")
-        ws.cell(row=fila, column=cc).font = Font(bold=True)
+        ws.cell(row=fila, column=cc).font = Font(name=FUENTE, bold=True)
         ws.cell(row=fila, column=cc).number_format = FMT_EVOL
     _bordes(ws, f_hdr_mes, f_total_anual, 2, 15)
     fila += 2
@@ -495,7 +507,7 @@ def _hoja_evolucion(wb, branding, calc_ruc, anio_base, anio_anterior, datos_por_
     # D61=IF(D34>D59,"SUPERO 1.5% O COEF","-"))
     uit = uit_del_anio(int(anio_base))
     f_uit_label = fila
-    ws.cell(row=fila, column=3, value="MAX 300 UIT").font = Font(bold=True)
+    ws.cell(row=fila, column=3, value="MAX 300 UIT").font = Font(name=FUENTE, bold=True)
     ws.cell(row=fila, column=4, value=f"={300}*{uit}").number_format = FMT_EVOL
     fila += 2
     ws.cell(row=fila, column=4,
@@ -545,9 +557,9 @@ def _hoja_evolucion(wb, branding, calc_ruc, anio_base, anio_anterior, datos_por_
     f_mensual_banda = fila
     fila += 1
     ws.merge_cells(start_row=fila, start_column=3, end_row=fila, end_column=6)
-    ws.cell(row=fila, column=3, value="Ventas").font = Font(bold=True, color="FFFFFFFF")
+    ws.cell(row=fila, column=3, value="Ventas").font = Font(name=FUENTE, bold=True, color="FFFFFFFF")
     ws.merge_cells(start_row=fila, start_column=8, end_row=fila, end_column=11)
-    ws.cell(row=fila, column=8, value="Compras").font = Font(bold=True, color="FFFFFFFF")
+    ws.cell(row=fila, column=8, value="Compras").font = Font(name=FUENTE, bold=True, color="FFFFFFFF")
     for cc in list(range(3, 7)) + list(range(8, 12)):
         ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=TURQUESA)
     fila += 1
@@ -556,7 +568,7 @@ def _hoja_evolucion(wb, branding, calc_ruc, anio_base, anio_anterior, datos_por_
                   8: "Gravados", 9: "No gravado", 10: "Total", 11: "Variación"}
     for cc, txt in cabeceras2.items():
         cel = ws.cell(row=fila, column=cc, value=txt)
-        cel.font = Font(bold=True)
+        cel.font = Font(name=FUENTE, bold=True)
         cel.fill = PatternFill("solid", fgColor=TURQUESA)
     fila += 1
 
@@ -576,12 +588,12 @@ def _hoja_evolucion(wb, branding, calc_ruc, anio_base, anio_anterior, datos_por_
             ws.cell(row=r, column=11, value=f'=+IF(OR(AND(H{r}=0,H{rp}=0),H{r}=0,H{rp}=0),"",H{r}-H{rp})').number_format = FMT_EVOL
         fila += 1
     f_m_fin = fila - 1
-    ws.cell(row=fila, column=2, value="Total General").font = Font(bold=True)
-    ws.cell(row=fila, column=3, value=f"=SUM(C{f_m_ini}:C{f_m_fin})").font = Font(bold=True)
+    ws.cell(row=fila, column=2, value="Total General").font = Font(name=FUENTE, bold=True)
+    ws.cell(row=fila, column=3, value=f"=SUM(C{f_m_ini}:C{f_m_fin})").font = Font(name=FUENTE, bold=True)
     ws.cell(row=fila, column=3).number_format = FMT_EVOL
-    ws.cell(row=fila, column=8, value=f"=SUBTOTAL(9,H{f_m_ini}:H{f_m_fin})").font = Font(bold=True)
+    ws.cell(row=fila, column=8, value=f"=SUBTOTAL(9,H{f_m_ini}:H{f_m_fin})").font = Font(name=FUENTE, bold=True)
     ws.cell(row=fila, column=8).number_format = FMT_EVOL
-    ws.cell(row=fila, column=10, value=f"=SUM(H{f_m_ini}:H{f_m_fin})+SUM(I{f_m_ini}:I{f_m_fin})").font = Font(bold=True)
+    ws.cell(row=fila, column=10, value=f"=SUM(H{f_m_ini}:H{f_m_fin})+SUM(I{f_m_ini}:I{f_m_fin})").font = Font(name=FUENTE, bold=True)
     ws.cell(row=fila, column=10).number_format = FMT_EVOL
     _bordes(ws, f_hdr2, fila, 2, 11)
 
@@ -609,11 +621,17 @@ def _hoja_evolucion(wb, branding, calc_ruc, anio_base, anio_anterior, datos_por_
     return ws
 
 
-def construir_workbook(ruc, calc, branding, logo_bytes, anio_base, anio_anterior, datos_por_anio):
+def construir_workbook(ruc, calc, branding, logo_bytes,
+                        anio_base=None, anio_anterior=None, datos_por_anio=None):
+    """Por pedido explicito (2026-09-23) solo se genera IGV-RENTA por ahora
+    -- la hoja de Evolucion se arma UNICAMENTE si se pasan los datos
+    (anio_base/datos_por_anio), para poder retomarla mas adelante sin
+    reescribir nada."""
     wb = Workbook()
     _hoja_igv_renta(wb, calc, branding, logo_bytes)
-    mes_actual = int(calc["periodo"][4:6])
-    _hoja_evolucion(wb, branding, ruc, anio_base, anio_anterior, datos_por_anio, mes_actual)
+    if datos_por_anio is not None:
+        mes_actual = int(calc["periodo"][4:6])
+        _hoja_evolucion(wb, branding, ruc, anio_base, anio_anterior, datos_por_anio, mes_actual)
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)

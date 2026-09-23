@@ -4,7 +4,6 @@ from fastapi.responses import StreamingResponse
 
 from .supabase_client import sb
 from . import igv_renta, branding as branding_mod
-from .pdt_parser import obtener_evolucion_mes
 from .excel_builder import construir_workbook
 
 app = FastAPI(title="Pardo Liquidaciones")
@@ -23,7 +22,10 @@ def _empresa_id(ruc):
 
 
 @app.get("/liquidacion/{ruc}/{periodo}")
-def generar_liquidacion(ruc: str, periodo: str, anio_comparar: str | None = None):
+def generar_liquidacion(ruc: str, periodo: str):
+    """2026-09-23: por pedido explicito, solo genera la hoja IGV-RENTA
+    (preliquidacion) -- la hoja de Evolucion queda pausada (no se llama a
+    construir_workbook con datos_por_anio) hasta que se retome ese tema."""
     if not re.fullmatch(r"\d{11}", ruc):
         raise HTTPException(400, "RUC inválido (deben ser 11 dígitos)")
     if not re.fullmatch(r"\d{6}", periodo):
@@ -34,23 +36,7 @@ def generar_liquidacion(ruc: str, periodo: str, anio_comparar: str | None = None
     br = branding_mod.obtener_branding(ruc)
     logo_bytes = branding_mod.descargar_logo(br["logo_url"])
 
-    anio_base = periodo[:4]
-    # El template real SIEMPRE compara contra el anio anterior (columnas
-    # "Año 2025"/"Año 2026" lado a lado) -- si no se pide otro anio
-    # explicito, se usa anio_base-1 por defecto en vez de dejarlo vacio.
-    anio_anterior = anio_comparar if (anio_comparar and anio_comparar != anio_base) else str(int(anio_base) - 1)
-    anios = [anio_base, anio_anterior]
-    datos_por_anio = {}
-    for anio in anios:
-        datos_por_anio[anio] = []
-        for mes in range(1, 13):
-            p = f"{anio}{mes:02d}"
-            try:
-                datos_por_anio[anio].append(obtener_evolucion_mes(empresa_id, p))
-            except Exception:
-                datos_por_anio[anio].append(None)
-
-    buf = construir_workbook(ruc, calc, br, logo_bytes, anio_base, anio_anterior, datos_por_anio)
+    buf = construir_workbook(ruc, calc, br, logo_bytes)
 
     nombre_archivo = f"Liquidacion_{br['nombre'][:30].replace(' ', '_')}_{periodo}.xlsx"
     return StreamingResponse(
