@@ -92,9 +92,12 @@ def declaracion_final(empresa_id, periodo, cod_formulario="0621"):
 
 
 def obtener_evolucion_mes(empresa_id, periodo):
-    """Devuelve {ventas, compras, tipo_declaracion} declarados en el PDT
-    final de ese mes, o None si la empresa no tiene PDT 621 para ese
-    periodo (ej. mes aun no declarado)."""
+    """Devuelve lo declarado en el PDT final de ese mes, o None si la
+    empresa no tiene PDT 621 para ese periodo (ej. mes aun no declarado).
+    'compras_gravadas'/'compras_no_gravadas' van separados (no pre-sumados)
+    porque el template real de Evolucion Anual/Mensual las muestra en
+    columnas distintas ('Gravados'/'No gravados'), confirmado contra el
+    Excel real de MEDISALUD (columnas H/I de la hoja AF (ULTIMO))."""
     decl = declaracion_final(empresa_id, periodo)
     if not decl or not decl.get("url_detalle"):
         return None
@@ -104,6 +107,8 @@ def obtener_evolucion_mes(empresa_id, periodo):
     return {
         "ventas": datos["ventas_total"],
         "compras": datos["compras_total"],
+        "compras_gravadas": datos["compras_gravadas"],
+        "compras_no_gravadas": datos["compras_no_gravadas"],
         "tipo_declaracion": datos["tipo_declaracion"],
         "num_orden": decl["num_orden"],
     }

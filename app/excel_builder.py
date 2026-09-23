@@ -1,27 +1,49 @@
-"""Arma el .xlsx final calcado del formato real del despacho (capturas del
-usuario, 2026-09-23): hoja IGV-RENTA (bloque RAZON SOCIAL/RUC/REGIMEN +
-franjas naranja/celeste + resumen de deuda tributaria) y hoja AF con
-EXACTAMENTE 2 graficos -- uno de BARRAS para "Evolucion Anual" (4 series:
-Ventas/Compras x 2025/2026) y uno de LINEAS para "Evolucion Mensual" (2
-series: Ventas/Compras del anio base) -- no 5 graficos separados como se
-penso al principio a partir de un Excel de OTRA empresa con un formato mas
-viejo."""
+"""Arma el .xlsx final calcado del Excel real del despacho -- verificado
+2026-09-23 celda por celda contra el archivo real de DIABETES
+('Liquidacion de impuestos 202608-Diabetes E.I.R.L..xlsx', hojas
+'IGV-RENTA' y 'AF (ULTIMO)'): mismos colores exactos (naranja FFF5811E,
+turquesa FF76D8E3, celeste claro FFDAEEF3), mismas formulas de Excel (no
+valores ya calculados en Python -- asi si alguien corrige un numero a mano
+el resto se recalcula solo), mismo detalle de Compras por tasa (18%/10.5%,
+Internas/Importadas), misma regla RMT de 300 UIT, mismo par de graficos
+(1 de barras 'Evolucion Anual' con 4 series, 1 de lineas 'Evolucion Mensual'
+con 2 series) y mismo formato condicional (MIN=rojo/MAX=verde por columna,
+barras de datos en las columnas Total) sin lineas de cuadricula."""
 import io
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles.differential import DifferentialStyle
+from openpyxl.formatting.rule import Rule, DataBarRule
 from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.chart.data_source import AxDataSource, StrRef
+from openpyxl.chart.series import SeriesLabel
 from openpyxl.chart.marker import Marker
 from openpyxl.drawing.image import Image as XLImage
 from PIL import Image as PILImage
 
+from .igv_renta import uit_del_anio
+
 MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio",
          "Agosto", "Setiembre", "Octubre", "Noviembre", "Diciembre"]
+MESES_CORTO = {"01": "Enero", "02": "Febrero", "03": "Marzo", "04": "Abril", "05": "Mayo",
+               "06": "Junio", "07": "Julio", "08": "Agosto", "09": "Setiembre",
+               "10": "Octubre", "11": "Noviembre", "12": "Diciembre"}
 
-NARANJA = "FFE8720C"
-CELESTE = "FF5BC0DE"
-CELESTE_CLARO = "FFD9F2F8"
-GRIS = "FFD9D9D9"
+# Colores EXACTOS sacados del archivo real (no aproximados).
+NARANJA = "FFF5811E"
+TURQUESA = "FF76D8E3"
+CELESTE_CLARO = "FFDAEEF3"
+RESUMEN_BG = "FFDCE6F1"
+ROJO_CF = "FFC7CE"
+VERDE_CF = "C6EFCE"
+AMARILLO_FLAG = "FFFFFF00"
+ROJO_FONT = "FFFF0000"
+TEAL_TEXTO = "FF005C74"
+
+FMT_BASE = "#,##0"
+FMT_TRIBUTO = "#,##0.00"
+FMT_PCT = "0.00%"
+FMT_EVOL = "#,##0.00"
 
 
 def _fmt(n):
@@ -38,27 +60,24 @@ def _franja(ws, fila, col_ini, col_fin, texto, color, blanco=True):
         celda.fill = PatternFill("solid", fgColor=color)
         celda.font = Font(bold=True, color="FFFFFFFF" if blanco else "FF000000")
     ws.cell(row=fila, column=col_ini, value=texto)
-    ws.merge_cells(start_row=fila, start_column=col_ini, end_row=fila, end_column=col_fin)
+    if col_fin > col_ini:
+        ws.merge_cells(start_row=fila, start_column=col_ini, end_row=fila, end_column=col_fin)
     ws.cell(row=fila, column=col_ini).alignment = Alignment(horizontal="center")
 
 
-def _encabezado_empresa(ws, branding, calc_ruc):
-    ws.column_dimensions["A"].width = 4
-    ws.column_dimensions["B"].width = 22
-    ws.column_dimensions["C"].width = 46
-    for col in "DE":
-        ws.column_dimensions[col].width = 14
+def _cf_minmax(ws, rango):
+    """MIN de la columna en rojo claro, MAX en verde claro -- mismo par de
+    reglas 'top10 rank=1' (Resaltar el valor mas bajo/alto) que usa el
+    Excel real en las columnas de Evolucion."""
+    rojo = DifferentialStyle(fill=PatternFill(fgColor=ROJO_CF, bgColor=ROJO_CF, fill_type="solid"))
+    verde = DifferentialStyle(fill=PatternFill(fgColor=VERDE_CF, bgColor=VERDE_CF, fill_type="solid"))
+    ws.conditional_formatting.add(rango, Rule(type="top10", rank=1, bottom=True, dxf=rojo))
+    ws.conditional_formatting.add(rango, Rule(type="top10", rank=1, bottom=False, dxf=verde))
 
-    filas = [
-        ("RAZÓN SOCIAL:", branding["nombre"]),
-        ("RUC:", calc_ruc),
-        ("RÉGIMEN TRIBUTARIO:", branding.get("regimen_tributario") or "—"),
-    ]
-    for i, (etq, val) in enumerate(filas):
-        ws.cell(row=1 + i, column=2, value=etq).font = Font(bold=True, size=10)
-        c = ws.cell(row=1 + i, column=3, value=val)
-        c.font = Font(bold=True, size=10, color=_hex_a_argb("1E88C7"))
-    return 5
+
+def _cf_databar(ws, rango):
+    ws.conditional_formatting.add(rango, DataBarRule(
+        start_type="min", end_type="max", color="638EC6"))
 
 
 def _agregar_logo(ws, logo_bytes, celda):
@@ -75,299 +94,482 @@ def _agregar_logo(ws, logo_bytes, celda):
         pass
 
 
-def _hoja_igv_renta(wb, calc, branding, logo_bytes):
-    ws = wb.active
-    ws.title = "IGV-RENTA"
-    v, c = calc["ventas"], calc["compras"]
-
-    fila = _encabezado_empresa(ws, branding, calc["ruc"])
-    _agregar_logo(ws, logo_bytes, "F1")
-
-    meses_es = {"01": "Enero", "02": "Febrero", "03": "Marzo", "04": "Abril", "05": "Mayo",
-                "06": "Junio", "07": "Julio", "08": "Agosto", "09": "Setiembre",
-                "10": "Octubre", "11": "Noviembre", "12": "Diciembre"}
-    ws.cell(row=fila, column=2, value="PRELIQUIDACIÓN DE IMPUESTOS  MENSUAL").font = Font(bold=True, size=12)
-    fila += 1
-    ws.cell(row=fila, column=2, value=meses_es[calc["periodo"][4:]]).font = Font(bold=True)
-    ws.cell(row=fila, column=3, value=calc["periodo"][:4]).font = Font(bold=True)
-    fila += 2
-
-    _franja(ws, fila, 2, 5, "IGV CUENTA PROPIA", NARANJA)
-    fila += 1
-    for c_idx, txt in [(2, "DESCRIPCIÓN"), (4, "BASE"), (5, "TRIBUTO")]:
-        ws.cell(row=fila, column=c_idx, value=txt).font = Font(bold=True, color="FFFFFFFF")
-        ws.cell(row=fila, column=c_idx).fill = PatternFill("solid", fgColor=CELESTE)
-    ws.merge_cells(start_row=fila, start_column=2, end_row=fila, end_column=3)
-    fila += 1
-
-    def _fila_dato(etq_signo, etq_tipo, etq_desc, base, tributo):
-        nonlocal fila
-        ws.cell(row=fila, column=2, value=etq_signo)
-        ws.cell(row=fila, column=2).font = Font(bold=True)
-        ws.cell(row=fila, column=3, value=(etq_tipo + (f" — {etq_desc}" if etq_desc else "")) if etq_tipo else etq_desc)
-        if base is not None:
-            ws.cell(row=fila, column=4, value=_fmt(base)).number_format = "#,##0.00"
-        if tributo is not None:
-            ws.cell(row=fila, column=5, value=_fmt(tributo) if tributo != "-" else "-").number_format = "#,##0.00"
-        fila += 1
-
-    ws.cell(row=fila, column=2, value="VENTAS").font = Font(bold=True)
-    for cc in range(2, 6):
-        ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=CELESTE_CLARO)
-    fila += 1
-    _fila_dato("(+)", "Gravadas", "Ventas netas", v["base_gravada"], v["igv"])
-    _fila_dato("", "", "Descuentos concedidos y/o devoluciones", None, 0)
-    _fila_dato("(+)", "No Gravadas", "Ventas netas", v["no_gravado"], None)
-    ws.cell(row=fila, column=2, value="TOTAL").font = Font(bold=True)
-    for cc, val in [(4, v["base_total"]), (5, v["igv"])]:
-        ws.cell(row=fila, column=cc, value=_fmt(val)).font = Font(bold=True)
-        ws.cell(row=fila, column=cc).number_format = "#,##0.00"
-    for cc in range(2, 6):
-        ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=GRIS)
-    fila += 2
-
-    ws.cell(row=fila, column=2, value="COMPRAS").font = Font(bold=True)
-    for cc in range(2, 6):
-        ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=CELESTE_CLARO)
-    fila += 1
-    _fila_dato("(-)", "Gravadas", "Compras netas - Internas", c["base_gravada"], c["igv"])
-    _fila_dato("(-)", "No Gravadas", "Compras netas - Internas", c["no_gravado"], None)
-    ws.cell(row=fila, column=2, value="TOTAL").font = Font(bold=True)
-    for cc, val in [(4, c["base_total"]), (5, c["igv"])]:
-        ws.cell(row=fila, column=cc, value=_fmt(val)).font = Font(bold=True)
-        ws.cell(row=fila, column=cc).number_format = "#,##0.00"
-    for cc in range(2, 6):
-        ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=GRIS)
-    fila += 2
-
-    _franja(ws, fila, 2, 5, "DETERMINACIÓN DE LA DEUDA TRIBUTARIA - IGV", NARANJA)
-    fila += 1
-    ws.cell(row=fila, column=2, value="DESCRIPCIÓN").font = Font(bold=True, color="FFFFFFFF")
-    ws.cell(row=fila, column=5, value="TRIBUTO").font = Font(bold=True, color="FFFFFFFF")
-    for cc in (2, 5):
-        ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=CELESTE)
-    ws.merge_cells(start_row=fila, start_column=2, end_row=fila, end_column=4)
-    fila += 1
-
-    def _fila_igv(signo, etq, val, negrita=False, gris=False):
-        nonlocal fila
-        ws.cell(row=fila, column=2, value=signo)
-        cc = ws.cell(row=fila, column=3, value=etq)
-        ws.merge_cells(start_row=fila, start_column=3, end_row=fila, end_column=4)
-        cv = ws.cell(row=fila, column=5, value=_fmt(val))
-        cv.number_format = "#,##0.00"
-        if negrita:
-            cc.font = Font(bold=True); cv.font = Font(bold=True)
-        if gris:
-            for c2 in range(2, 6):
-                ws.cell(row=fila, column=c2).fill = PatternFill("solid", fgColor=GRIS)
-        fila += 1
-
-    _fila_igv("(-)", "Impuesto a pagar", v["igv"] - c["igv"] if (v["igv"] - c["igv"]) > 0 else 0)
-    _fila_igv("(-)", "Saldo a favor del periodo anterior", calc["igv_saldo_favor_anterior"])
-    _fila_igv("", "Tributo a pagar", max(0, calc["igv_resultante"]), negrita=True, gris=True)
-    _fila_igv("(-)", "Percepciones declaradas en el periodo", calc["igv_percepciones_periodo"])
-    _fila_igv("(-)", "Percepciones declaradas en periodos anteriores", calc["igv_percepciones_anteriores"])
-    _fila_igv("(-)", "Retenciones declaradas en el periodo", calc["igv_retenciones_periodo"])
-    _fila_igv("(-)", "Retenciones declaradas en periodos anteriores", calc["igv_retenciones_anteriores"])
-    _fila_igv("(-)", "Impuesto Temporal a los Activos Netos (ley n° 28424)", calc["igv_itan"])
-    _fila_igv("(-)", "Otros créditos permitido por ley", calc["igv_otros_creditos"])
-    _fila_igv("", "Total tributo a pagar", max(0, calc["igv_resultante"]), negrita=True, gris=True)
-    _fila_igv("(-)", "Pagos previos", calc["igv_pagos_previos"])
-
-    _franja(ws, fila, 2, 4, "TOTAL DEUDA TRIBUTARIA DEL IGV", NARANJA)
-    ws.cell(row=fila, column=5).fill = PatternFill("solid", fgColor=NARANJA)
-    ws.cell(row=fila, column=5, value=_fmt(max(0, calc["igv_resultante"])))
-    ws.cell(row=fila, column=5).font = Font(bold=True, color="FFFFFFFF")
-    ws.cell(row=fila, column=5).number_format = "#,##0.00"
-    fila += 2
-
-    _franja(ws, fila, 2, 5, "IMPUESTO A LA RENTA - 3ERA CATEGORIA", CELESTE)
-    fila += 1
-    ws.cell(row=fila, column=3, value="Tasa / coeficiente (%)").font = Font(italic=True)
-    ws.cell(row=fila, column=5, value=calc["renta_tasa_pct"] if calc["renta_tasa_pct"] is not None else "—")
-    fila += 1
-    ws.cell(row=fila, column=2, value="DESCRIPCIÓN").font = Font(bold=True)
-    ws.cell(row=fila, column=4, value="BASE").font = Font(bold=True)
-    ws.cell(row=fila, column=5, value="TRIBUTO").font = Font(bold=True)
-    fila += 1
-    ws.cell(row=fila, column=2, value="Ingresos Netos")
-    ws.cell(row=fila, column=4, value=_fmt(v["base_total"])).number_format = "#,##0.00"
-    renta_bruta = (calc["renta_resultante"] + calc["renta_saldo_favor_anterior"]
-                   + calc["renta_otros_creditos"] + calc["renta_pagos_previos"]) \
-        if calc["renta_resultante"] is not None else 0
-    ws.cell(row=fila, column=5, value=_fmt(renta_bruta)).number_format = "#,##0.00"
-    fila += 2
-
-    _franja(ws, fila, 2, 5, "DETERMINACIÓN DE LA DEUDA TRIBUTARIA - RENTA", CELESTE)
-    fila += 1
-    ws.cell(row=fila, column=2, value="DESCRIPCIÓN").font = Font(bold=True)
-    ws.cell(row=fila, column=5, value="TRIBUTO").font = Font(bold=True)
-    fila += 1
-    renta_result = calc["renta_resultante"] if calc["renta_resultante"] is not None else 0
-    _fila_igv("(-)", "Impuesto a pagar", renta_bruta)
-    _fila_igv("(-)", "Saldo a favor del periodo anterior", calc["renta_saldo_favor_anterior"])
-    _fila_igv("", "Saldo a favor" if renta_result < 0 else "Tributo a pagar", renta_result, negrita=True, gris=True)
-    _fila_igv("(-)", "Otros créditos permitido por ley", calc["renta_otros_creditos"])
-    _fila_igv("(-)", "Pagos previos", calc["renta_pagos_previos"])
-
-    _franja(ws, fila, 2, 4, "TOTAL DEUDA TRIBUTARIA DE RENTA DE 3ERA CATEGORIA", CELESTE)
-    ws.cell(row=fila, column=5).fill = PatternFill("solid", fgColor=CELESTE)
-    ws.cell(row=fila, column=5, value=_fmt(max(0, renta_result)))
-    ws.cell(row=fila, column=5).font = Font(bold=True, color="FFFFFFFF")
-    ws.cell(row=fila, column=5).number_format = "#,##0.00"
-    fila += 2
-
-    _franja(ws, fila, 2, 5, "RESUMEN DEUDA TRIBUTARIA", CELESTE_CLARO, blanco=False)
-    fila += 1
-    for c_idx, txt in [(2, "TRIBUTO"), (3, "CÓDIGO"), (4, "IMPORTE"), (5, "ESTADO")]:
-        ws.cell(row=fila, column=c_idx, value=txt).font = Font(bold=True)
-    fila += 1
-    igv_pagar = max(0, calc["igv_resultante"])
-    renta_pagar = max(0, renta_result)
-    ws.cell(row=fila, column=2, value="IGV"); ws.cell(row=fila, column=3, value="1011")
-    ws.cell(row=fila, column=4, value=_fmt(igv_pagar)).number_format = "#,##0.00"
-    ws.cell(row=fila, column=5, value="POR PAGAR" if igv_pagar > 0 else "SALDO A FAVOR")
-    fila += 1
-    ws.cell(row=fila, column=2, value="RENTA"); ws.cell(row=fila, column=3, value="3121")
-    ws.cell(row=fila, column=4, value=_fmt(renta_pagar) if renta_pagar else "-")
-    if renta_pagar:
-        ws.cell(row=fila, column=4).number_format = "#,##0.00"
-    ws.cell(row=fila, column=5, value="POR PAGAR" if renta_pagar > 0 else "SALDO A FAVOR")
-    fila += 1
-    ws.cell(row=fila, column=2, value="TOTAL").font = Font(bold=True)
-    ws.cell(row=fila, column=4, value=_fmt(igv_pagar + renta_pagar)).font = Font(bold=True)
-    ws.cell(row=fila, column=4).number_format = "#,##0.00"
-
-    return ws
-
-
 def _set_categorias_texto(chart, ws_ref_formula):
+    """openpyxl set_categories() SIEMPRE arma un NumRef aunque la categoria
+    sea texto (meses) -- rompe el grafico en Excel (cada mes sale como una
+    serie separada en la leyenda). Fix: armar el StrRef a mano."""
     for serie in chart.series:
         serie.cat = AxDataSource(strRef=StrRef(f=ws_ref_formula))
 
 
-def _hoja_evolucion(wb, branding, calc_ruc, anio_base, anio_anterior, datos_por_anio):
-    """EXACTO como las capturas: bloque EVOLUCION ANUAL (tabla Ventas +
-    tabla Compras lado a lado + 1 grafico de BARRAS con 4 series) y bloque
-    EVOLUCION MENSUAL (tabla Ventas + tabla Compras + 1 grafico de LINEAS
-    con 2 series). Las columnas 'Variacion'/'%' usan FORMULAS reales de
-    Excel (pedido explicito del usuario 2026-09-23: 'ten en cuenta que en
-    algunos hay formula'), no valores ya calculados en Python -- asi si
-    alguien corrige un numero a mano, el resto se recalcula solo."""
-    ws = wb.create_sheet("AF")
-    for col, w in [("A", 12), ("B", 13), ("C", 13), ("D", 13), ("E", 13),
-                   ("F", 13), ("G", 13), ("H", 11), ("I", 11)]:
+# ---------------------------------------------------------------------
+# HOJA IGV-RENTA
+# ---------------------------------------------------------------------
+
+def _hoja_igv_renta(wb, calc, branding, logo_bytes):
+    ws = wb.active
+    ws.title = "IGV-RENTA"
+    ws.sheet_view.showGridLines = False
+    v, c = calc["ventas"], calc["compras"]
+    ct = c["por_tasa"]
+
+    for col, w in [("A", 2.5), ("B", 16), ("C", 18), ("D", 3), ("E", 20),
+                   ("F", 16), ("G", 16), ("H", 14), ("I", 14)]:
         ws.column_dimensions[col].width = w
 
-    ws.cell(row=1, column=1, value="RAZÓN SOCIAL:").font = Font(bold=True, size=10)
-    ws.cell(row=1, column=2, value=branding["nombre"]).font = Font(bold=True, size=10, color=_hex_a_argb("1E88C7"))
-    ws.cell(row=2, column=1, value="RUC:").font = Font(bold=True, size=10)
-    ws.cell(row=2, column=2, value=calc_ruc).font = Font(bold=True, size=10)
-    ws.cell(row=3, column=1, value="RÉGIMEN TRIBUTARIO:").font = Font(bold=True, size=10)
-    ws.cell(row=3, column=2, value=branding.get("regimen_tributario") or "—").font = Font(bold=True, size=10)
+    def val(row, col, value=None, fmt=None, bold=False, color=None, fill=None):
+        cell = ws.cell(row=row, column=col, value=value)
+        if fmt:
+            cell.number_format = fmt
+        if bold or color:
+            cell.font = Font(bold=bold, color=color)
+        if fill:
+            cell.fill = PatternFill("solid", fgColor=fill)
+        return cell
+
+    # --- Encabezado ---
+    val(1, 2, "RAZÓN SOCIAL:", bold=True, color=TEAL_TEXTO)
+    val(1, 3, branding["nombre"], bold=True, color=TEAL_TEXTO)
+    val(2, 2, "RUC:", bold=True, color=TEAL_TEXTO)
+    val(2, 3, calc["ruc"], bold=True, color=TEAL_TEXTO)
+    val(3, 2, "RÉGIMEN TRIBUTARIO:", bold=True, color=TEAL_TEXTO)
+    val(3, 3, branding.get("regimen_tributario") or "—", bold=True, color=TEAL_TEXTO)
+    _agregar_logo(ws, logo_bytes, "H1")
+
+    val(5, 2, "PRELIQUIDACIÓN DE IMPUESTOS  MENSUAL", bold=True)
+    val(6, 2, MESES_CORTO[calc["periodo"][4:]], bold=True)
+    val(6, 3, calc["periodo"][:4], bold=True)
+
+    # --- IGV CUENTA PROPIA ---
+    fila = 8
+    _franja(ws, fila, 2, 9, "IGV CUENTA PROPIA", NARANJA)
+    fila += 1
+    val(fila, 2, "DESCRIPCIÓN", bold=True, color="FFFFFFFF", fill=TURQUESA)
+    ws.merge_cells(start_row=fila, start_column=2, end_row=fila, end_column=6)
+    for cc in range(3, 7):
+        ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=TURQUESA)
+    val(fila, 7, "BASE", bold=True, color="FFFFFFFF", fill=TURQUESA)
+    val(fila, 8, "TRIBUTO", bold=True, color="FFFFFFFF", fill=TURQUESA)
+    val(fila, 9, "TOTAL", bold=True, color="FFFFFFFF", fill=TURQUESA)
+    fila += 1
+
+    _franja(ws, fila, 2, 9, "VENTAS", CELESTE_CLARO, blanco=False)
+    fila += 1
+    f_vg = fila
+    val(fila, 2, "(+)", bold=True)
+    val(fila, 3, "Gravadas")
+    val(fila, 4, "Ventas netas")
+    ws.merge_cells(start_row=fila, start_column=4, end_row=fila, end_column=6)
+    val(fila, 7, _fmt(v["base_gravada"]), fmt=FMT_BASE)
+    val(fila, 8, f"=ROUND(G{fila}*18%,0)", fmt=FMT_TRIBUTO)
+    val(fila, 9, f"=G{fila}+H{fila}", fmt=FMT_BASE)
+    fila += 1
+    f_vd = fila
+    val(fila, 4, "Descuentos concedidos y/o devoluciones de ventas")
+    ws.merge_cells(start_row=fila, start_column=4, end_row=fila, end_column=6)
+    val(fila, 7, 0, fmt=FMT_BASE)
+    val(fila, 8, f"=ROUND(G{fila}*18%,0)", fmt=FMT_TRIBUTO)
+    val(fila, 9, f"=G{fila}+H{fila}", fmt=FMT_BASE)
+    fila += 1
+    f_vng = fila
+    val(fila, 2, "(+)", bold=True)
+    val(fila, 3, "No Gravadas")
+    val(fila, 4, "Ventas netas")
+    ws.merge_cells(start_row=fila, start_column=4, end_row=fila, end_column=6)
+    val(fila, 7, _fmt(v["no_gravado"]), fmt=FMT_BASE)
+    val(fila, 9, f"=+G{fila}", fmt=FMT_BASE)
+    fila += 1
+    f_vtot = fila
+    val(fila, 2, "TOTAL", bold=True)
+    val(fila, 7, f"=SUM(G{f_vg}:G{f_vng})", fmt=FMT_TRIBUTO, bold=True)
+    val(fila, 8, f"=SUM(H{f_vg}:H{f_vng})", fmt=FMT_TRIBUTO, bold=True)
+    val(fila, 9, f"=SUM(I{f_vg}:I{f_vng})", fmt=FMT_BASE, bold=True)
+    fila += 2
+
+    _franja(ws, fila, 2, 9, "COMPRAS", CELESTE_CLARO, blanco=False)
+    fila += 1
+
+    def _fila_compra(signo, tipo, base, tasa_pct, primera):
+        nonlocal fila
+        f_int = fila
+        val(fila, 2, signo, bold=True)
+        val(fila, 3, tipo)
+        val(fila, 4, "Compras netas - Internas")
+        ws.merge_cells(start_row=fila, start_column=4, end_row=fila, end_column=6)
+        val(fila, 7, _fmt(base["internas"]), fmt=FMT_BASE)
+        if tasa_pct is not None:
+            val(fila, 8, f"=+ROUND(G{fila}*{tasa_pct}%,0)", fmt=FMT_TRIBUTO)
+        val(fila, 9, f"=G{fila}+H{fila}", fmt=FMT_BASE)
+        fila += 1
+        f_imp = fila
+        val(fila, 4, "Compras netas - Importadas")
+        ws.merge_cells(start_row=fila, start_column=4, end_row=fila, end_column=6)
+        val(fila, 7, _fmt(base["importadas"]), fmt=FMT_BASE)
+        if tasa_pct is not None:
+            val(fila, 8, f"=+ROUND(G{fila}*{tasa_pct}%,0)", fmt=FMT_TRIBUTO)
+        val(fila, 9, f"=G{fila}+H{fila}", fmt=FMT_BASE)
+        if not base["importadas"]:
+            ws.row_dimensions[fila].hidden = True
+        fila += 1
+        return f_int, f_imp
+
+    f_c18_i, f_c18_imp = _fila_compra("(-)", "Gravadas 18%", ct["18"], 18, True)
+    f_c105_i, f_c105_imp = _fila_compra("(-)", "Gravadas 10.5%", ct["105"], 10.5, False)
+    f_cng_i, f_cng_imp = _fila_compra("(-)", "No Gravadas",
+                                       {"internas": c["no_gravado"], "importadas": 0.0}, None, False)
+    f_ctot = fila
+    val(fila, 2, "TOTAL", bold=True)
+    val(fila, 7, f"=SUM(G{f_c18_i}:G{f_cng_imp})", fmt=FMT_TRIBUTO, bold=True)
+    val(fila, 8, f"=SUM(H{f_c18_i}:H{f_cng_imp})", fmt=FMT_TRIBUTO, bold=True)
+    val(fila, 9, f"=SUM(I{f_c18_i}:I{f_cng_imp})", fmt=FMT_BASE, bold=True)
+    fila += 2
+
+    # --- Determinación deuda IGV ---
+    _franja(ws, fila, 2, 9, "DETERMINACIÓN DE LA DEUDA TRIBUTARIA - IGV", NARANJA)
+    fila += 1
+    val(fila, 2, "DESCRIPCIÓN", bold=True, color="FFFFFFFF", fill=TURQUESA)
+    ws.merge_cells(start_row=fila, start_column=2, end_row=fila, end_column=8)
+    for cc in range(3, 9):
+        ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=TURQUESA)
+    val(fila, 9, "TRIBUTO", bold=True, color="FFFFFFFF", fill=TURQUESA)
+    fila += 1
+
+    def _fila_i(signo, etq, formula_o_valor, negrita=False, gris=False, es_formula_texto=False):
+        nonlocal fila
+        r = fila
+        val(fila, 2, signo)
+        if es_formula_texto:
+            cc = val(fila, 3, etq)
+        else:
+            cc = val(fila, 3, etq)
+        ws.merge_cells(start_row=fila, start_column=3, end_row=fila, end_column=8)
+        cv = val(fila, 9, formula_o_valor, fmt=FMT_TRIBUTO)
+        if negrita:
+            cc.font = Font(bold=True)
+            cv.font = Font(bold=True)
+        if gris:
+            for c2 in range(2, 10):
+                ws.cell(row=fila, column=c2).fill = PatternFill("solid", fgColor=CELESTE_CLARO)
+        fila += 1
+        return r
+
+    f_igv_pagar = _fila_i("(-)", f'=+IF(I{fila}>0,"Impuesto a pagar","Saldo a favor del mes")',
+                           f"=+H{f_vtot}-H{f_ctot}")
+    f_igv_saldoant = _fila_i("(-)", "Saldo a favor del periodo anterior",
+                              _fmt(calc["igv_saldo_favor_anterior"]))
+    f_igv_trib1 = fila
+    _fila_i("", f'=IF(I{fila}>0,"Tributo a pagar","Saldo a favor")',
+            f"=+I{f_igv_pagar}+I{f_igv_saldoant}", negrita=True, gris=True)
+    f_igv_percep_per = _fila_i("(-)", "Percepciones declaradas en el periodo",
+                                _fmt(calc["igv_percepciones_periodo"]))
+    f_igv_percep_ant = _fila_i("(-)", "Percepciones declaradas en periodos anteriores",
+                                _fmt(calc["igv_percepciones_anteriores"]))
+    f_igv_percep_saldo = fila
+    _fila_i("", "Saldo de percepciones no aplicadas",
+            f'=IF(AND(C{f_igv_trib1}="TRIBUTO A PAGAR",I{f_igv_trib1}<ABS(I{f_igv_percep_per}+I{f_igv_percep_ant})),'
+            f'I{f_igv_trib1}-ABS(I{f_igv_percep_per}+I{f_igv_percep_ant}),'
+            f'IF(C{f_igv_trib1}="SALDO A FAVOR",I{f_igv_percep_per}+I{f_igv_percep_ant},0))')
+    f_igv_reten_per = _fila_i("(-)", "Retenciones declaradas en el periodo",
+                               _fmt(calc["igv_retenciones_periodo"]))
+    f_igv_reten_ant = _fila_i("(-)", "Retenciones declaradas en periodos anteriores",
+                               _fmt(calc["igv_retenciones_anteriores"]))
+    _fila_i("", "Saldo de retenciones no aplicadas",
+            f'=IF(ABS(I{f_igv_percep_saldo})>0,I{f_igv_reten_per}+I{f_igv_reten_ant},'
+            f'IF(AND(SUM(I{f_igv_trib1}:I{f_igv_percep_ant})>0,SUM(I{f_igv_trib1}:I{f_igv_percep_ant})<ABS(I{f_igv_reten_per}+I{f_igv_reten_ant})),'
+            f'SUM(I{f_igv_trib1}:I{f_igv_percep_ant})-ABS(I{f_igv_reten_per}+I{f_igv_reten_ant}),0))')
+    _fila_i("(-)", "Compensación saldo a favor del exportador", 0)
+    _fila_i("(-)", "Impuesto Temporal a los Activos Netos (ley n° 28424)", _fmt(calc["igv_itan"]))
+    _fila_i("(-)", "Otros créditos permitido por ley", _fmt(calc["igv_otros_creditos"]))
+    f_igv_totaltrib = fila
+    _fila_i("", "Total tributo a pagar", f"=I{f_igv_trib1}", negrita=True, gris=True)
+    f_igv_pagosprev = _fila_i("(-)", "Pagos previos", _fmt(calc["igv_pagos_previos"]))
+
+    _franja(ws, fila, 2, 8, "TOTAL DEUDA TRIBUTARIA DEL IGV", NARANJA)
+    val(fila, 9, f"=I{f_igv_totaltrib}", bold=True, color="FFFFFFFF", fill=NARANJA)
+    ws.cell(row=fila, column=9).number_format = FMT_TRIBUTO
+    f_igv_total = fila
+    fila += 2
+
+    # --- Impuesto a la Renta ---
+    _franja(ws, fila, 2, 9, "IMPUESTO A LA RENTA - 3ERA CATEGORIA", TURQUESA)
+    fila += 1
+    regla = calc["renta_regla_300_uit"]
+    f_coef = fila
+    val(fila, 3, "Coeficiente")
+    val(fila, 5, (regla["tasa"] if regla["usa_coeficiente"] else 0), fmt=FMT_PCT)
+    fila += 1
+    f_pct = fila
+    val(fila, 3, "Porcentaje")
+    val(fila, 5, 0.01, fmt=FMT_PCT)
+    fila += 1
+    val(fila, 2, "DESCRIPCIÓN", bold=True, fill=RESUMEN_BG)
+    val(fila, 7, "BASE", bold=True, fill=RESUMEN_BG)
+    val(fila, 9, "TRIBUTO", bold=True, fill=RESUMEN_BG)
+    fila += 1
+    f_ingresos = fila
+    val(fila, 2, "Ingresos Netos")
+    val(fila, 7, f"=+G{f_vtot}", fmt=FMT_TRIBUTO)
+    val(fila, 9, f"=ROUND(IF(E{f_coef}=0,G{f_ingresos}*E{f_pct},G{f_ingresos}*E{f_coef}),0)", fmt=FMT_TRIBUTO)
+    fila += 2
+
+    _franja(ws, fila, 2, 9, "DETERMINACIÓN DE LA DEUDA TRIBUTARIA - RENTA", TURQUESA)
+    fila += 1
+    val(fila, 2, "DESCRIPCIÓN", bold=True, color="FFFFFFFF", fill=TURQUESA)
+    ws.merge_cells(start_row=fila, start_column=2, end_row=fila, end_column=8)
+    for cc in range(3, 9):
+        ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=TURQUESA)
+    val(fila, 9, "TRIBUTO", bold=True, color="FFFFFFFF", fill=TURQUESA)
+    fila += 1
+
+    f_renta_pagar = _fila_i("(-)", f'=+IF(I{fila}>0,"Impuesto a pagar","Saldo a favor del mes")',
+                             f"=+I{f_ingresos}")
+    f_renta_saldoant = fila
+    saldo_ant_renta = _fmt(calc["renta_saldo_favor_anterior"])
+    _fila_i("(-)", "Saldo a favor del periodo anterior", saldo_ant_renta)
+    if saldo_ant_renta:
+        ws.cell(row=f_renta_saldoant, column=9).fill = PatternFill("solid", fgColor=AMARILLO_FLAG)
+        ws.cell(row=f_renta_saldoant, column=9).font = Font(color=ROJO_FONT)
+    f_renta_trib1 = fila
+    _fila_i("", f'=IF(I{fila}>0,"Tributo a pagar","Saldo a favor")',
+            f"=+I{f_renta_pagar}+I{f_renta_saldoant}", negrita=True, gris=True)
+    _fila_i("(-)", "Compensación saldo a favor del exportador", 0)
+    _fila_i("(-)", "Impuesto Temporal a los Activos Netos (ley n° 28424)", 0)
+    _fila_i("(-)", "Otros créditos permitido por ley", _fmt(calc["renta_otros_creditos"]))
+    f_renta_ultima = _fila_i("(-)", "Pagos previos", _fmt(calc["renta_pagos_previos"]))
+
+    _franja(ws, fila, 2, 8, "TOTAL DEUDA TRIBUTARIA DE RENTA DE 3ERA CATEGORIA", TURQUESA)
+    val(fila, 9, f"=+IF(SUM(I{f_renta_trib1}:I{f_renta_ultima})<0,0,SUM(I{f_renta_trib1}:I{f_renta_ultima}))",
+        bold=True, color="FFFFFFFF", fill=TURQUESA)
+    ws.cell(row=fila, column=9).number_format = FMT_TRIBUTO
+    f_renta_total = fila
+    fila += 2
+
+    # --- Resumen ---
+    _franja(ws, fila, 2, 9, "RESUMEN DEUDA TRIBUTARIA", RESUMEN_BG, blanco=False)
+    fila += 1
+    for c_idx, txt in [(2, "TRIBUTO"), (3, "CÓDIGO"), (4, "IMPORTE"), (5, "ESTADO")]:
+        val(fila, c_idx, txt, bold=True)
+    fila += 1
+    f_res_igv = fila
+    val(fila, 2, "IGV", bold=True)
+    val(fila, 3, 1011, bold=True)
+    val(fila, 4, f"=I{f_igv_total}", fmt=FMT_TRIBUTO, fill=CELESTE_CLARO)
+    val(fila, 5, f'=IF(D{fila}>0,"POR PAGAR","SALDO A FAVOR")')
+    fila += 1
+    f_res_renta = fila
+    val(fila, 2, "RENTA", bold=True)
+    val(fila, 3, 3121, bold=True)
+    val(fila, 4, f"=I{f_renta_total}", fmt=FMT_TRIBUTO)
+    val(fila, 5, f'=IF(D{fila}>0,"POR PAGAR","SALDO A FAVOR")')
+    fila += 1
+    val(fila, 3, "TOTAL", bold=True)
+    val(fila, 4, f"=+D{f_res_igv}+D{f_res_renta}", fmt=FMT_TRIBUTO, bold=True)
+
+    return ws
+
+
+# ---------------------------------------------------------------------
+# HOJA AF (ULTIMO) -- Evolución
+# ---------------------------------------------------------------------
+
+def _hoja_evolucion(wb, branding, calc_ruc, anio_base, anio_anterior, datos_por_anio, mes_actual):
+    ws = wb.create_sheet("AF (ULTIMO)")
+    ws.sheet_view.showGridLines = False
+    for col, w in [("A", 2.5), ("B", 15), ("C", 20), ("D", 16), ("E", 11), ("F", 11),
+                   ("G", 3), ("H", 15), ("I", 15), ("J", 17), ("K", 15), ("L", 15),
+                   ("M", 17), ("N", 14), ("O", 11)]:
+        ws.column_dimensions[col].width = w
+
+    ws.cell(row=1, column=2, value="RAZÓN SOCIAL:").font = Font(bold=True, size=10)
+    ws.cell(row=1, column=3, value=branding["nombre"]).font = Font(bold=True, size=10, color=TEAL_TEXTO)
+    ws.cell(row=2, column=2, value="RUC:").font = Font(bold=True, size=10)
+    ws.cell(row=2, column=3, value=calc_ruc).font = Font(bold=True, size=10)
 
     def sval(anio, mes_idx, clave):
         d = datos_por_anio.get(anio, [None] * 12)[mes_idx]
-        return _fmt(d[clave]) if d else 0
+        return _fmt(d.get(clave)) if d else None
 
-    fila = 5
-    _franja(ws, fila, 1, 9, "EVOLUCIÓN ANUAL", NARANJA)
+    anio_ant_txt = anio_anterior or ""
+
+    fila = 4
+    _franja(ws, fila, 2, 15, f"EVOLUCIÓN COMPRAS - VENTAS PERIODO {anio_ant_txt}-{anio_base}".strip("- "), NARANJA)
+    fila += 2
+
+    _franja(ws, fila, 2, 15, "EVOLUCIÓN ANUAL", NARANJA)
     fila += 1
-    fila_hdr1 = fila
-    ws.cell(row=fila, column=1, value="Mes").font = Font(bold=True)
-    ws.cell(row=fila, column=2, value=f"Ventas {anio_anterior or ''}").font = Font(bold=True)
-    ws.cell(row=fila, column=3, value=f"Ventas {anio_base}").font = Font(bold=True)
-    ws.cell(row=fila, column=4, value="Variación").font = Font(bold=True)
-    ws.cell(row=fila, column=5, value="%").font = Font(bold=True)
+    ws.merge_cells(start_row=fila, start_column=2, end_row=fila, end_column=6)
+    ws.cell(row=fila, column=2, value="Ventas").font = Font(bold=True, color="FFFFFFFF")
+    ws.merge_cells(start_row=fila, start_column=8, end_row=fila, end_column=13)
+    ws.cell(row=fila, column=8, value="Compras").font = Font(bold=True, color="FFFFFFFF")
+    for cc in list(range(2, 7)) + list(range(8, 14)):
+        ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=TURQUESA)
     fila += 1
-    fila_datos1_ini = fila
+    f_hdr_mes = fila
+    ws.merge_cells(start_row=fila, start_column=3, end_row=fila, end_column=4)
+    ws.cell(row=fila, column=3, value="Año").font = Font(bold=True)
+    ws.merge_cells(start_row=fila, start_column=5, end_row=fila, end_column=6)
+    ws.cell(row=fila, column=5, value="Variación").font = Font(bold=True)
+    ws.merge_cells(start_row=fila, start_column=8, end_row=fila, end_column=10)
+    ws.cell(row=fila, column=8, value=f"Año {anio_ant_txt}").font = Font(bold=True)
+    ws.merge_cells(start_row=fila, start_column=11, end_row=fila, end_column=13)
+    ws.cell(row=fila, column=11, value=f"Año {anio_base}").font = Font(bold=True)
+    ws.merge_cells(start_row=fila, start_column=14, end_row=fila, end_column=15)
+    ws.cell(row=fila, column=14, value="Variación").font = Font(bold=True)
+    for cc in [3, 5, 8, 11, 14]:
+        ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=TURQUESA)
+    fila += 1
+    f_hdr_detalle = fila
+    cabeceras = {2: "Mes", 3: anio_ant_txt, 4: anio_base, 5: "Soles", 6: "%",
+                 8: "Gravados", 9: "No gravados", 10: f"Total {anio_ant_txt}",
+                 11: "Gravados", 12: "No Gravados", 13: f"Total {anio_base}",
+                 14: "Soles", 15: "%"}
+    for cc, txt in cabeceras.items():
+        c = ws.cell(row=fila, column=cc, value=txt)
+        c.font = Font(bold=True)
+        c.fill = PatternFill("solid", fgColor=TURQUESA)
+    fila += 1
+
+    f_datos_ini = fila
     for i, mes in enumerate(MESES):
-        ws.cell(row=fila, column=1, value=mes)
-        ws.cell(row=fila, column=2, value=sval(anio_anterior, i, "ventas") if anio_anterior else 0)
-        ws.cell(row=fila, column=3, value=sval(anio_base, i, "ventas"))
         r = fila
-        ws.cell(row=r, column=4, value=f"=C{r}-B{r}").number_format = "#,##0.00"
-        ws.cell(row=r, column=5, value='=IF(B{0}=0,"",D{0}/B{0})'.format(r)).number_format = "0.0%"
+        ws.cell(row=r, column=2, value=mes)
+        ws.cell(row=r, column=3, value=sval(anio_anterior, i, "ventas") if anio_anterior else None)
+        ws.cell(row=r, column=4, value=sval(anio_base, i, "ventas"))
+        ws.cell(row=r, column=5, value=f'=IF(AND(C{r}=0,D{r}=0),"",+D{r}-C{r})').number_format = FMT_EVOL
+        ws.cell(row=r, column=6, value=f'=IF(OR(AND(C{r}=0,D{r}=0),C{r}=0,D{r}=0),"",ABS((+D{r}/C{r})-100%))').number_format = "0.00%"
+        ws.cell(row=r, column=8, value=sval(anio_anterior, i, "compras_gravadas") if anio_anterior else None)
+        ws.cell(row=r, column=9, value=sval(anio_anterior, i, "compras_no_gravadas") if anio_anterior else None)
+        ws.cell(row=r, column=10, value=f"=H{r}+I{r}").number_format = FMT_EVOL
+        ws.cell(row=r, column=11, value=sval(anio_base, i, "compras_gravadas"))
+        ws.cell(row=r, column=12, value=sval(anio_base, i, "compras_no_gravadas"))
+        ws.cell(row=r, column=13, value=f"=K{r}+L{r}").number_format = FMT_EVOL
+        ws.cell(row=r, column=14, value=f'=IF(AND(J{r}=0,M{r}=0),"",+M{r}-J{r})').number_format = FMT_EVOL
+        ws.cell(row=r, column=15, value=f'=IF(OR(AND(J{r}=0,M{r}=0),J{r}=0,M{r}=0),"",ABS((+M{r}/J{r})-100%))').number_format = "0.00%"
+        for cc in (3, 4, 8, 9, 10, 11, 12, 13):
+            ws.cell(row=r, column=cc).number_format = FMT_EVOL
         fila += 1
-    fila_datos1_fin = fila - 1
-    ws.cell(row=fila, column=1, value="Total General").font = Font(bold=True)
-    ws.cell(row=fila, column=2, value=f"=SUM(B{fila_datos1_ini}:B{fila_datos1_fin})").font = Font(bold=True)
-    ws.cell(row=fila, column=3, value=f"=SUM(C{fila_datos1_ini}:C{fila_datos1_fin})").font = Font(bold=True)
-    for cc in (2, 3):
-        ws.cell(row=fila, column=cc).number_format = "#,##0.00"
-    fila_total1 = fila
+    f_datos_fin = fila - 1
 
-    fh = fila_hdr1
-    ws.cell(row=fh, column=7, value=f"Compras {anio_anterior or ''}").font = Font(bold=True)
-    ws.cell(row=fh, column=8, value=f"Compras {anio_base}").font = Font(bold=True)
-    ws.cell(row=fh, column=9, value="Variación").font = Font(bold=True)
-    for i in range(12):
-        r = fila_datos1_ini + i
-        ws.cell(row=r, column=7, value=sval(anio_anterior, i, "compras") if anio_anterior else 0)
-        ws.cell(row=r, column=8, value=sval(anio_base, i, "compras"))
-        ws.cell(row=r, column=9, value=f"=H{r}-G{r}").number_format = "#,##0.00"
-    ws.cell(row=fila_total1, column=7, value=f"=SUM(G{fila_datos1_ini}:G{fila_datos1_fin})").font = Font(bold=True)
-    ws.cell(row=fila_total1, column=8, value=f"=SUM(H{fila_datos1_ini}:H{fila_datos1_fin})").font = Font(bold=True)
-    for cc in (7, 8):
-        ws.cell(row=fila_total1, column=cc).number_format = "#,##0.00"
+    f_total_anual = fila
+    ws.cell(row=fila, column=2, value="Total General").font = Font(bold=True)
+    for cc in (3, 4, 8, 9, 10, 11, 12, 13):
+        letra = ws.cell(row=fila, column=cc).column_letter
+        ws.cell(row=fila, column=cc, value=f"=SUBTOTAL(9,{letra}{f_datos_ini}:{letra}{f_datos_fin})")
+        ws.cell(row=fila, column=cc).font = Font(bold=True)
+        ws.cell(row=fila, column=cc).number_format = FMT_EVOL
+    fila += 2
 
-    cat_formula = f"'AF'!$A${fila_datos1_ini}:$A${fila_datos1_fin}"
+    # Regla 300 UIT (verificada contra el Excel real: D59=300*5500,
+    # D61=IF(D34>D59,"SUPERO 1.5% O COEF","-"))
+    uit = uit_del_anio(int(anio_base))
+    f_uit_label = fila
+    ws.cell(row=fila, column=3, value="MAX 300 UIT").font = Font(bold=True)
+    ws.cell(row=fila, column=4, value=f"={300}*{uit}").number_format = FMT_EVOL
+    fila += 2
+    ws.cell(row=fila, column=4,
+            value=f'=+IF(D{f_total_anual}>D{f_uit_label},"SUPERO 1.5% O COEF","-")')
+    fila += 2
+
+    # CF: MIN=rojo / MAX=verde por columna, barras de datos en los "Total"
+    _cf_minmax(ws, f"C{f_datos_ini}:C{f_datos_fin}")
+    _cf_minmax(ws, f"D{f_datos_ini}:D{f_datos_fin}")
+    _cf_minmax(ws, f"H{f_datos_ini}:H{f_datos_fin}")
+    _cf_minmax(ws, f"I{f_datos_ini}:I{f_datos_fin}")
+    _cf_minmax(ws, f"K{f_datos_ini}:K{f_datos_fin}")
+    _cf_minmax(ws, f"L{f_datos_ini}:L{f_datos_fin}")
+    _cf_databar(ws, f"J{f_datos_ini}:J{f_datos_fin}")
+    _cf_databar(ws, f"M{f_datos_ini}:M{f_datos_fin}")
+
+    # --- Grafico de barras: Evolucion Anual (4 series) ---
+    cat_formula = f"'AF (ULTIMO)'!$B${f_datos_ini}:$B${f_datos_fin}"
     chart_anual = BarChart()
     chart_anual.type = "col"
-    chart_anual.title = f"EVOLUCIÓN DE VENTAS - COMPRAS\nPERIODO: {anio_anterior or ''}-{anio_base}".strip("- ")
-    chart_anual.height, chart_anual.width = 10, 20
-    for col in (2, 3, 7, 8):
-        ref = Reference(ws, min_col=col, min_row=fila_hdr1, max_row=fila_datos1_fin)
-        chart_anual.add_data(ref, titles_from_data=True)
+    chart_anual.grouping = "clustered"
+    chart_anual.title = f"EVOLUCIÓN DE VENTAS - COMPRAS PERIODO: {anio_ant_txt} - {anio_base}".strip(" -")
+    chart_anual.height, chart_anual.width = 10, 22
+    chart_anual.y_axis.numFmt = FMT_EVOL
+    chart_anual.legend.position = "b"
+
+    color_ant = branding.get("color") or "1E3A5F"
+    series_specs = [
+        (3, f"VENTAS {anio_ant_txt}", "00B0F0"),
+        (4, f"VENTAS {anio_base}", color_ant),
+        (10, f"COMPRAS {anio_ant_txt}", "00B050"),
+        (13, f"COMPRAS {anio_base}", "92D050"),
+    ]
+    for col, titulo, color in series_specs:
+        ref = Reference(ws, min_col=col, min_row=f_datos_ini, max_row=f_datos_fin)
+        chart_anual.add_data(ref, titles_from_data=False)
+        s = chart_anual.series[-1]
+        s.tx = SeriesLabel(v=titulo)
+        s.graphicalProperties.solidFill = color
     _set_categorias_texto(chart_anual, cat_formula)
-    ws.add_chart(chart_anual, "K5")
+    ws.add_chart(chart_anual, f"B{fila + 1}")
+    fila += 18
 
-    fila = fila_total1 + 2
+    # --- EVOLUCIÓN MENSUAL (mes a mes, dentro del anio base) ---
+    _franja(ws, fila, 2, 15, "EVOLUCIÓN MENSUAL", NARANJA)
+    fila += 1
+    ws.merge_cells(start_row=fila, start_column=3, end_row=fila, end_column=6)
+    ws.cell(row=fila, column=3, value="Ventas").font = Font(bold=True, color="FFFFFFFF")
+    ws.merge_cells(start_row=fila, start_column=8, end_row=fila, end_column=11)
+    ws.cell(row=fila, column=8, value="Compras").font = Font(bold=True, color="FFFFFFFF")
+    for cc in list(range(3, 7)) + list(range(8, 12)):
+        ws.cell(row=fila, column=cc).fill = PatternFill("solid", fgColor=TURQUESA)
+    fila += 1
+    f_hdr2 = fila
+    cabeceras2 = {2: "Mes", 3: "Soles", 4: "Variación", 6: "%",
+                  8: "Gravados", 9: "No gravado", 10: "Total", 11: "Variación"}
+    for cc, txt in cabeceras2.items():
+        c = ws.cell(row=fila, column=cc, value=txt)
+        c.font = Font(bold=True)
+        c.fill = PatternFill("solid", fgColor=TURQUESA)
+    fila += 1
 
-    _franja(ws, fila, 1, 9, "EVOLUCIÓN MENSUAL", NARANJA)
-    fila += 1
-    fila_hdr2 = fila
-    ws.cell(row=fila, column=1, value="Mes").font = Font(bold=True)
-    ws.cell(row=fila, column=2, value="Ventas").font = Font(bold=True)
-    ws.cell(row=fila, column=3, value="Variación").font = Font(bold=True)
-    ws.cell(row=fila, column=4, value="%").font = Font(bold=True)
-    ws.cell(row=fila, column=7, value="Compras").font = Font(bold=True)
-    ws.cell(row=fila, column=8, value="Variación").font = Font(bold=True)
-    ws.cell(row=fila, column=9, value="%").font = Font(bold=True)
-    fila += 1
-    fila_datos2_ini = fila
+    f_m_ini = fila
     for i, mes in enumerate(MESES):
         r = fila
-        ws.cell(row=r, column=1, value=mes)
-        ws.cell(row=r, column=2, value=sval(anio_base, i, "ventas"))
-        ws.cell(row=r, column=7, value=sval(anio_base, i, "compras"))
+        r_anual = f_datos_ini + i
+        ws.cell(row=r, column=2, value=mes)
+        ws.cell(row=r, column=3, value=f"=D{r_anual}").number_format = FMT_EVOL
+        ws.cell(row=r, column=8, value=f"=K{r_anual}").number_format = FMT_EVOL
+        ws.cell(row=r, column=9, value=f"=L{r_anual}").number_format = FMT_EVOL
+        ws.cell(row=r, column=10, value=f"=H{r}+I{r}").number_format = FMT_EVOL
         if i > 0:
-            ws.cell(row=r, column=3, value=f"=B{r}-B{r-1}").number_format = "#,##0.00"
-            ws.cell(row=r, column=4, value='=IF(B{0}=0,"",C{1}/B{0})'.format(r - 1, r)).number_format = "0.0%"
-            ws.cell(row=r, column=8, value=f"=G{r}-G{r-1}").number_format = "#,##0.00"
-            ws.cell(row=r, column=9, value='=IF(G{0}=0,"",H{1}/G{0})'.format(r - 1, r)).number_format = "0.0%"
+            rp = r - 1
+            ws.cell(row=r, column=4, value=f'=+IF(OR(AND(C{r}=0,C{rp}=0),C{r}=0,C{rp}=0),"",C{r}-C{rp})').number_format = FMT_EVOL
+            ws.cell(row=r, column=6, value=f'=IF(OR(AND(C{r}=0,C{rp}=0),C{r}=0,C{rp}=0),"",ABS((+C{r}/C{rp})-100%))').number_format = "0.00%"
+            ws.cell(row=r, column=11, value=f'=+IF(OR(AND(H{r}=0,H{rp}=0),H{r}=0,H{rp}=0),"",H{r}-H{rp})').number_format = FMT_EVOL
         fila += 1
-    fila_datos2_fin = fila - 1
-    ws.cell(row=fila, column=1, value="Total General").font = Font(bold=True)
-    ws.cell(row=fila, column=2, value=f"=SUM(B{fila_datos2_ini}:B{fila_datos2_fin})").font = Font(bold=True)
-    ws.cell(row=fila, column=7, value=f"=SUM(G{fila_datos2_ini}:G{fila_datos2_fin})").font = Font(bold=True)
-    for cc in (2, 7):
-        ws.cell(row=fila, column=cc).number_format = "#,##0.00"
+    f_m_fin = fila - 1
+    ws.cell(row=fila, column=2, value="Total General").font = Font(bold=True)
+    ws.cell(row=fila, column=3, value=f"=SUM(C{f_m_ini}:C{f_m_fin})").font = Font(bold=True)
+    ws.cell(row=fila, column=3).number_format = FMT_EVOL
+    ws.cell(row=fila, column=8, value=f"=SUBTOTAL(9,H{f_m_ini}:H{f_m_fin})").font = Font(bold=True)
+    ws.cell(row=fila, column=8).number_format = FMT_EVOL
+    ws.cell(row=fila, column=10, value=f"=SUM(H{f_m_ini}:H{f_m_fin})+SUM(I{f_m_ini}:I{f_m_fin})").font = Font(bold=True)
+    ws.cell(row=fila, column=10).number_format = FMT_EVOL
 
-    cat_formula2 = f"'AF'!$A${fila_datos2_ini}:$A${fila_datos2_fin}"
+    _cf_minmax(ws, f"C{f_m_ini}:C{f_m_fin}")
+    _cf_minmax(ws, f"H{f_m_ini}:H{f_m_fin}")
+    _cf_minmax(ws, f"I{f_m_ini}:I{f_m_fin}")
+    _cf_databar(ws, f"J{f_m_ini}:J{f_m_fin}")
+
+    cat_formula2 = f"'AF (ULTIMO)'!$B${f_m_ini}:$B${f_m_fin}"
     chart_mensual = LineChart()
-    chart_mensual.title = f"EVOLUCIÓN DE VENTAS - COMPRAS\nPERIODO: {anio_base}"
-    chart_mensual.height, chart_mensual.width = 10, 20
-    ref_v = Reference(ws, min_col=2, min_row=fila_hdr2, max_row=fila_datos2_fin)
-    ref_c = Reference(ws, min_col=7, min_row=fila_hdr2, max_row=fila_datos2_fin)
-    chart_mensual.add_data(ref_v, titles_from_data=True)
-    chart_mensual.add_data(ref_c, titles_from_data=True)
-    _set_categorias_texto(chart_mensual, cat_formula2)
-    for s in chart_mensual.series:
+    chart_mensual.title = f"EVOLUCIÓN DE VENTAS - COMPRAS PERIODO: {anio_base}"
+    chart_mensual.height, chart_mensual.width = 10, 22
+    chart_mensual.y_axis.numFmt = FMT_EVOL
+    chart_mensual.legend.position = "b"
+    for col, titulo in [(3, f"VENTAS {anio_base}"), (10, f"COMPRAS {anio_base}")]:
+        ref = Reference(ws, min_col=col, min_row=f_m_ini, max_row=f_m_fin)
+        chart_mensual.add_data(ref, titles_from_data=False)
+        s = chart_mensual.series[-1]
+        s.tx = SeriesLabel(v=titulo)
         s.marker = Marker(symbol="circle", size=5)
         s.smooth = False
-    ws.add_chart(chart_mensual, "K27")
+    _set_categorias_texto(chart_mensual, cat_formula2)
+    ws.add_chart(chart_mensual, f"B{fila + 2}")
 
     return ws
 
@@ -375,7 +577,8 @@ def _hoja_evolucion(wb, branding, calc_ruc, anio_base, anio_anterior, datos_por_
 def construir_workbook(ruc, calc, branding, logo_bytes, anio_base, anio_anterior, datos_por_anio):
     wb = Workbook()
     _hoja_igv_renta(wb, calc, branding, logo_bytes)
-    _hoja_evolucion(wb, branding, ruc, anio_base, anio_anterior, datos_por_anio)
+    mes_actual = int(calc["periodo"][4:6])
+    _hoja_evolucion(wb, branding, ruc, anio_base, anio_anterior, datos_por_anio, mes_actual)
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)

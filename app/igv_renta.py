@@ -3,9 +3,23 @@
 en Sistema_Extractor_XML_Pardo_v2.html), incluido el fix del 2026-09-23
 (cada fila se tiene que taguear con su registro real -- VENTAS usa
 mto_exonerado+mto_inafecto, COMPRAS usa valor_adq_ng -- si no, 'No Gravadas'
-de Ventas siempre sale en 0)."""
+de Ventas siempre sale en 0), mas la regla RMT de 300 UIT (2026-09-23,
+verificada contra el Excel real de Diabetes: D59='=300*5500',
+D61='=+IF(D34>D59,"SUPERO 1.5% O COEF","-")')."""
 import re
 from .supabase_client import sb
+
+# UIT por anio de ejercicio -- el Excel real de Diabetes usa 5500 (literal)
+# para el ejercicio 2026. Si aparece un anio nuevo sin UIT publicada todavia,
+# se usa la ultima conocida (evita romper el calculo, el contador la corrige
+# a mano en el Excel igual que hoy).
+UIT_POR_ANIO = {2026: 5500}
+
+
+def uit_del_anio(anio):
+    if anio in UIT_POR_ANIO:
+        return UIT_POR_ANIO[anio]
+    return UIT_POR_ANIO[max(UIT_POR_ANIO)]
 
 
 def _maybe(query):
@@ -31,20 +45,49 @@ def _filtrar_mismo_periodo(filas, periodo):
     return out
 
 
+def _bucket_tasa(bi, igv):
+    """Clasifica una fila de compras por tasa de IGV real (igv/bi_gravado) --
+    no existe un campo 'tasa' en el SIRE, asi que se deriva por fila. La Ley
+    N 31556 dejo tasas reducidas (10.5%) para ciertos rubros, por eso el
+    template real separa 'Gravadas 18%' de 'Gravadas 10.5%'."""
+    if not bi:
+        return "18"
+    rate = igv / bi
+    return "105" if abs(rate - 0.105) < abs(rate - 0.18) else "18"
+
+
 def _resumen_igv(filas, registro):
     base_gravada = igv = no_gravado = total = 0.0
+    por_tasa = {"18": 0.0, "105": 0.0}
+    igv_por_tasa = {"18": 0.0, "105": 0.0}
     for f in filas:
-        base_gravada += float(f.get("bi_gravado") or 0)
-        igv += float(f.get("igv") or 0)
+        bi = float(f.get("bi_gravado") or 0)
+        fi = float(f.get("igv") or 0)
+        base_gravada += bi
+        igv += fi
         total += float(f.get("total") or 0)
         if registro == "VENTAS":
             no_gravado += float(f.get("mto_exonerado") or 0) + float(f.get("mto_inafecto") or 0)
         else:
             no_gravado += float(f.get("valor_adq_ng") or 0)
-    return {
+            tasa = _bucket_tasa(bi, fi)
+            por_tasa[tasa] += bi
+            igv_por_tasa[tasa] += fi
+    resumen = {
         "base_gravada": base_gravada, "igv": igv, "no_gravado": no_gravado,
         "total": total, "base_total": base_gravada + no_gravado, "n": len(filas),
     }
+    if registro != "VENTAS":
+        # Solo compras: base/igv separados por tasa, para el detalle
+        # "Gravadas 18% / Gravadas 10.5%" del template real. 'importadas'
+        # siempre en 0 -- el SIRE no trae un campo que distinga compras
+        # importadas de internas, y ninguna empresa del despacho las usa
+        # todavia (el template las deja como fila oculta hasta que aparezcan).
+        resumen["por_tasa"] = {
+            "18": {"internas": por_tasa["18"], "importadas": 0.0, "igv": igv_por_tasa["18"]},
+            "105": {"internas": por_tasa["105"], "importadas": 0.0, "igv": igv_por_tasa["105"]},
+        }
+    return resumen
 
 
 def obtener_filas(ruc, periodo, modo):
@@ -60,6 +103,27 @@ def _periodo_anterior(periodo):
     if m < 1:
         m, a = 12, a - 1
     return f"{a}{m:02d}"
+
+
+def _mes_anterior_tupla(anio, mes):
+    m = mes - 1
+    return (anio - 1, 12) if m < 1 else (anio, m)
+
+
+def regla_300_uit(ventas_acumuladas_anio, anio, coef_historico):
+    """Regimen MYPE Tributario (RMT): mientras los ingresos netos
+    ACUMULADOS del ejercicio no superen 300 UIT, el pago a cuenta es 1% de
+    los ingresos del mes. Apenas se supera en cualquier mes, de ahi en
+    adelante en todo el ejercicio se paga el MAYOR entre el coeficiente
+    propio y 1.5% (Art. 85 LIR modificado). Verificado contra el Excel real:
+    D59=300*UIT, D61 marca 'SUPERO 1.5% O COEF' cuando D34 (ventas acum.) >
+    D59 -- y ese mes E59(Coeficiente)=1.5% en vez de 0."""
+    limite = 300 * uit_del_anio(anio)
+    supero_300_uit = ventas_acumuladas_anio > limite
+    if not supero_300_uit:
+        return {"tasa": 0.01, "usa_coeficiente": False, "supero_300_uit": False, "limite_300_uit": limite}
+    tasa = max(float(coef_historico or 0), 0.015)
+    return {"tasa": tasa, "usa_coeficiente": True, "supero_300_uit": True, "limite_300_uit": limite}
 
 
 def calcular(ruc, empresa_id, periodo):
@@ -87,17 +151,43 @@ def calcular(ruc, empresa_id, periodo):
 
     mes = int(periodo[4:6])
     anio_ejercicio = int(periodo[:4]) - (2 if mes <= 2 else 1)
-    renta_tasa = None
+    coef_historico = None
     if guardada and guardada.get("renta_tasa_pct") is not None:
-        renta_tasa = guardada["renta_tasa_pct"]
+        coef_historico = guardada["renta_tasa_pct"]
     elif arrastre and arrastre.get("renta_tasa_pct") is not None:
-        renta_tasa = arrastre["renta_tasa_pct"]
+        coef_historico = arrastre["renta_tasa_pct"]
     else:
         coef = _maybe(sb.table("renta_coeficientes").select("coeficiente_pct,anio_ejercicio").eq(
             "empresa_id", empresa_id).eq("anio_ejercicio", anio_ejercicio).order(
             "fecha_presentacion", desc=True).limit(1))
         if coef:
-            renta_tasa = coef[0]["coeficiente_pct"]
+            coef_historico = coef[0]["coeficiente_pct"]
+
+    # Regla 300 UIT: ingresos netos acumulados del ejercicio (Enero..mes
+    # actual) sumando lo declarado en cada PDT 621 ya presentado. Usa la
+    # MISMA fuente (PDT, no propuesta SIRE) que la hoja Evolucion, para que
+    # el aviso "SUPERO 1.5% O COEF" del Excel siempre cuadre con esta regla.
+    from .pdt_parser import obtener_evolucion_mes
+    anio_periodo = int(periodo[:4])
+    ventas_acum = 0.0
+    for m in range(1, mes + 1):
+        p = f"{anio_periodo}{m:02d}"
+        try:
+            d = obtener_evolucion_mes(empresa_id, p)
+        except Exception:
+            d = None
+        if d:
+            ventas_acum += float(d.get("ventas") or 0)
+    if ventas_acum <= 0:
+        ventas_acum = r_ventas["base_total"]  # sin PDT declarado todavia: usa la propuesta del propio mes
+
+    regla_uit = regla_300_uit(ventas_acum, anio_periodo, coef_historico)
+    renta_tasa = (coef_historico / 100 if regla_uit["usa_coeficiente"] and coef_historico and coef_historico > 1
+                  else regla_uit["tasa"])
+    # coef_historico puede venir guardado como porcentaje entero (1.5) o
+    # como fraccion (0.015) segun la fuente -- se normaliza a fraccion.
+    if renta_tasa > 1:
+        renta_tasa = renta_tasa / 100
 
     rp = _maybe(sb.table("retenciones_percepciones_igv").select("tipo,monto_propio").eq(
         "empresa_id", empresa_id).eq("periodo", periodo)) or []
@@ -116,10 +206,8 @@ def calcular(ruc, empresa_id, periodo):
                    - igv_percep_ant - reten_periodo - igv_reten_ant - igv_itan
                    - igv_otros - igv_pagos_previos)
 
-    running_renta = None
-    if renta_tasa is not None:
-        renta_bruta = r_ventas["base_total"] * (float(renta_tasa) / 100)
-        running_renta = renta_bruta - renta_saldo_favor - renta_otros - renta_pagos_previos
+    renta_bruta = round(r_ventas["base_total"] * renta_tasa, 0)
+    running_renta = renta_bruta - renta_saldo_favor - renta_otros - renta_pagos_previos
 
     return {
         "ruc": ruc, "periodo": periodo,
@@ -131,7 +219,10 @@ def calcular(ruc, empresa_id, periodo):
         "igv_retenciones_anteriores": igv_reten_ant,
         "igv_itan": igv_itan, "igv_otros_creditos": igv_otros,
         "igv_pagos_previos": igv_pagos_previos, "igv_resultante": running_igv,
-        "renta_tasa_pct": renta_tasa,
+        "renta_tasa_pct": renta_tasa * 100,
+        "renta_coeficiente_historico_pct": coef_historico,
+        "renta_regla_300_uit": regla_uit,
+        "renta_ventas_acumuladas_anio": ventas_acum,
         "renta_saldo_favor_anterior": renta_saldo_favor,
         "renta_otros_creditos": renta_otros, "renta_pagos_previos": renta_pagos_previos,
         "renta_resultante": running_renta,

@@ -35,7 +35,11 @@ def generar_liquidacion(ruc: str, periodo: str, anio_comparar: str | None = None
     logo_bytes = branding_mod.descargar_logo(br["logo_url"])
 
     anio_base = periodo[:4]
-    anios = [anio_base] + ([anio_comparar] if anio_comparar and anio_comparar != anio_base else [])
+    # El template real SIEMPRE compara contra el anio anterior (columnas
+    # "Año 2025"/"Año 2026" lado a lado) -- si no se pide otro anio
+    # explicito, se usa anio_base-1 por defecto en vez de dejarlo vacio.
+    anio_anterior = anio_comparar if (anio_comparar and anio_comparar != anio_base) else str(int(anio_base) - 1)
+    anios = [anio_base, anio_anterior]
     datos_por_anio = {}
     for anio in anios:
         datos_por_anio[anio] = []
@@ -46,7 +50,6 @@ def generar_liquidacion(ruc: str, periodo: str, anio_comparar: str | None = None
             except Exception:
                 datos_por_anio[anio].append(None)
 
-    anio_anterior = anio_comparar if (anio_comparar and anio_comparar != anio_base) else None
     buf = construir_workbook(ruc, calc, br, logo_bytes, anio_base, anio_anterior, datos_por_anio)
 
     nombre_archivo = f"Liquidacion_{br['nombre'][:30].replace(' ', '_')}_{periodo}.xlsx"
