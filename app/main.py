@@ -32,8 +32,8 @@ def generar_liquidacion(ruc: str, periodo: str):
         raise HTTPException(400, "Período inválido (formato AAAAMM, ej. 202608)")
 
     empresa_id = _empresa_id(ruc)
-    calc = igv_renta.calcular(ruc, empresa_id, periodo)
     br = branding_mod.obtener_branding(ruc)
+    calc = igv_renta.calcular(ruc, empresa_id, periodo, regimen=br["regimen_tributario"])
     logo_bytes = branding_mod.descargar_logo(br["logo_url"])
 
     buf = construir_workbook(ruc, calc, br, logo_bytes)

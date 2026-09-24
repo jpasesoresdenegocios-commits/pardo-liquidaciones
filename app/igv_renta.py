@@ -3,9 +3,11 @@
 en Sistema_Extractor_XML_Pardo_v2.html), incluido el fix del 2026-09-23
 (cada fila se tiene que taguear con su registro real -- VENTAS usa
 mto_exonerado+mto_inafecto, COMPRAS usa valor_adq_ng -- si no, 'No Gravadas'
-de Ventas siempre sale en 0), mas la regla RMT de 300 UIT (2026-09-23,
-verificada contra el Excel real de Diabetes: D59='=300*5500',
-D61='=+IF(D34>D59,"SUPERO 1.5% O COEF","-")')."""
+de Ventas siempre sale en 0), mas la regla de pago a cuenta de Renta por
+regimen tributario (2026-09-24, verificada contra la hoja BD real de
+Diabetes -- ahi mismo estaba la tablita RER=1.5%/RMT=1%/RG=1.5% que
+faltaba -- y contra el Excel real de Diabetes para el tope de 300 UIT de
+RMT: D59='=300*5500', D61='=+IF(D34>D59,"SUPERO 1.5% O COEF","-")')."""
 import re
 from .supabase_client import sb
 
@@ -109,10 +111,10 @@ def _normalizar_fraccion_pct(v):
     """Las 3 fuentes de coeficiente historico (liquidaciones_impuestos
     guardada, su arrastre, o renta_coeficientes) guardan la tasa como
     PORCENTAJE (1.5 = 1.5%), nunca como fraccion -- se normaliza una sola
-    vez aqui. Bug real detectado 2026-09-23: sin este fix, regla_300_uit()
-    comparaba 1.5 contra 0.015 y devolvia 1.5 sin convertir, asi que el
-    Excel mostraba "150.00%" en la celda de Coeficiente y la Renta salia
-    100x mas grande (507,479 en vez de 5,075)."""
+    vez aqui. Bug real detectado 2026-09-23: sin este fix, la comparacion
+    mezclaba 1.5 contra 0.015 sin convertir, asi que el Excel mostraba
+    "150.00%" en la celda de Coeficiente y la Renta salia 100x mas grande
+    (507,479 en vez de 5,075)."""
     if v is None:
         return None
     v = float(v)
@@ -120,7 +122,7 @@ def _normalizar_fraccion_pct(v):
 
 
 def regla_300_uit(ventas_acumuladas_anio, anio, coef_historico):
-    """Regimen MYPE Tributario (RMT): mientras los ingresos netos
+    """SOLO para Regimen MYPE Tributario (RMT): mientras los ingresos netos
     ACUMULADOS del ejercicio no superen 300 UIT, el pago a cuenta es 1% de
     los ingresos del mes. Apenas se supera en cualquier mes, de ahi en
     adelante en todo el ejercicio se paga el MAYOR entre el coeficiente
@@ -138,10 +140,46 @@ def regla_300_uit(ventas_acumuladas_anio, anio, coef_historico):
     return {"tasa": tasa, "usa_coeficiente": True, "supero_300_uit": True, "limite_300_uit": limite}
 
 
-def calcular(ruc, empresa_id, periodo):
+def _es_regimen(regimen, *claves):
+    regimen_norm = (regimen or "").upper()
+    return any(clave in regimen_norm for clave in claves)
+
+
+def regla_tasa_renta(regimen, ventas_acumuladas_anio, anio, coef_historico):
+    """Pago a cuenta de Renta 3ra categoria -- la regla CAMBIA segun el
+    regimen tributario de la empresa (confirmado 2026-09-24 contra la
+    tablita real de la hoja BD de Diabetes: 'REGIMEN ESPECIAL DE RENTA
+    (RER)'->1.5%, 'REGIMEN MYPE TRIBUTARIO (RMT)'->1%, 'REGIMEN GENERAL
+    (RG)'->1.5%). Antes de esto el backend SOLO tenia la regla de RMT
+    -- para empresas RER/RG el calculo quedaba mal.
+
+    - RER: 1.5% FIJO de los ingresos netos, sin comparar con el
+      coeficiente ni con ningun tope de 300 UIT (Art. 118 LIR -- el
+      regimen especial no tiene pagos a cuenta variables).
+    - REGIMEN GENERAL (RG): SIEMPRE el mayor entre el coeficiente propio y
+      1.5%, desde el primer mes del ejercicio (Art. 85 LIR -- el tope de
+      300 UIT es exclusivo de RMT, RG no lo tiene).
+    - RMT, o si no se conoce el regimen de la empresa (fallback, es el
+      regimen mas comun del despacho): 1% hasta superar 300 UIT
+      acumulados en el ejercicio, luego el mayor entre coeficiente y
+      1.5% el resto del ejercicio (regla_300_uit)."""
+    if _es_regimen(regimen, "ESPECIAL"):
+        return {"tasa": 0.015, "usa_coeficiente": False, "supero_300_uit": None,
+                "limite_300_uit": None, "regimen_aplicado": "RER"}
+    if _es_regimen(regimen, "GENERAL"):
+        tasa = max(float(coef_historico or 0), 0.015)
+        return {"tasa": tasa, "usa_coeficiente": True, "supero_300_uit": None,
+                "limite_300_uit": None, "regimen_aplicado": "RG"}
+    resultado = regla_300_uit(ventas_acumuladas_anio, anio, coef_historico)
+    resultado["regimen_aplicado"] = "RMT" if regimen else "RMT (supuesto -- sin regimen cargado para esta empresa)"
+    return resultado
+
+
+def calcular(ruc, empresa_id, periodo, regimen=None):
     """Devuelve el dict completo de la liquidacion IGV-Renta del periodo,
     sin guardar nada -- solo lectura + calculo, igual que 'Calcular' en la
-    UI antes de apretar 'Guardar'."""
+    UI antes de apretar 'Guardar'. 'regimen' viene de branding.py
+    (almacen_datos.empresas_conciliador) -- si no se pasa, se asume RMT."""
     filas_v = obtener_filas(ruc, periodo, "VENTAS")
     filas_c = obtener_filas(ruc, periodo, "COMPRAS")
     r_ventas = _resumen_igv(filas_v, "VENTAS")
@@ -176,26 +214,27 @@ def calcular(ruc, empresa_id, periodo):
             coef_historico = coef[0]["coeficiente_pct"]
     coef_historico = _normalizar_fraccion_pct(coef_historico)
 
-    # Regla 300 UIT: ingresos netos acumulados del ejercicio (Enero..mes
-    # actual) sumando lo declarado en cada PDT 621 ya presentado. Usa la
-    # MISMA fuente (PDT, no propuesta SIRE) que la hoja Evolucion, para que
-    # el aviso "SUPERO 1.5% O COEF" del Excel siempre cuadre con esta regla.
-    from .pdt_parser import obtener_evolucion_mes
+    # Ingresos netos acumulados del ejercicio: SOLO hace falta para RMT (es
+    # lo unico que usa el tope de 300 UIT) -- para RER/RG se salta esta
+    # parte, que era la mas lenta del calculo (hasta 8 descargas de PDF/CSV
+    # del PDT, una por mes ya declarado).
     anio_periodo = int(periodo[:4])
     ventas_acum = 0.0
-    for m in range(1, mes + 1):
-        p = f"{anio_periodo}{m:02d}"
-        try:
-            d = obtener_evolucion_mes(empresa_id, p)
-        except Exception:
-            d = None
-        if d:
-            ventas_acum += float(d.get("ventas") or 0)
-    if ventas_acum <= 0:
-        ventas_acum = r_ventas["base_total"]  # sin PDT declarado todavia: usa la propuesta del propio mes
+    if not _es_regimen(regimen, "ESPECIAL", "GENERAL"):
+        from .pdt_parser import obtener_evolucion_mes
+        for m in range(1, mes + 1):
+            p = f"{anio_periodo}{m:02d}"
+            try:
+                d = obtener_evolucion_mes(empresa_id, p)
+            except Exception:
+                d = None
+            if d:
+                ventas_acum += float(d.get("ventas") or 0)
+        if ventas_acum <= 0:
+            ventas_acum = r_ventas["base_total"]  # sin PDT declarado todavia: usa la propuesta del propio mes
 
-    regla_uit = regla_300_uit(ventas_acum, anio_periodo, coef_historico)
-    renta_tasa = regla_uit["tasa"]
+    regla = regla_tasa_renta(regimen, ventas_acum, anio_periodo, coef_historico)
+    renta_tasa = regla["tasa"]
 
     rp = _maybe(sb.table("retenciones_percepciones_igv").select("tipo,monto_propio").eq(
         "empresa_id", empresa_id).eq("periodo", periodo)) or []
@@ -229,7 +268,7 @@ def calcular(ruc, empresa_id, periodo):
         "igv_pagos_previos": igv_pagos_previos, "igv_resultante": running_igv,
         "renta_tasa_pct": renta_tasa * 100,
         "renta_coeficiente_historico_pct": coef_historico,
-        "renta_regla_300_uit": regla_uit,
+        "renta_regla_300_uit": regla,
         "renta_ventas_acumuladas_anio": ventas_acum,
         "renta_saldo_favor_anterior": renta_saldo_favor,
         "renta_otros_creditos": renta_otros, "renta_pagos_previos": renta_pagos_previos,
