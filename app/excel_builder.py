@@ -12,7 +12,12 @@ tabla (las cuadriculas de la hoja quedan apagadas).
 2026-09-23 (cambio de alcance): por pedido explicito, el endpoint solo
 genera la hoja IGV-RENTA (preliquidacion) -- la hoja de Evolucion queda
 pausada (no se borra el codigo, solo se deja de invocar) hasta que se
-retome ese tema por separado."""
+retome ese tema por separado.
+
+2026-09-23 (fix reportado con capturas): el nombre de la empresa (si es
+largo) y la etiqueta "RÉGIMEN TRIBUTARIO:" quedaban cortados o tapados por
+el logo flotante -- ahora van en cajas combinadas con ancho fijo (con
+wrap_text en el nombre) que terminan ANTES de donde arranca el logo."""
 import io
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -156,13 +161,23 @@ def _hoja_igv_renta(wb, calc, branding, logo_bytes):
             cell.alignment = _CENTRO
         return cell
 
-    # --- Encabezado ---
+    # --- Encabezado -- el nombre de la empresa y "RÉGIMEN TRIBUTARIO:" van
+    # en cajas combinadas con ancho FIJO que terminan en la columna G, justo
+    # antes de donde arranca el logo (H1) -- antes se dejaban desbordar
+    # libremente y, si el nombre era largo o la etiqueta no entraba en su
+    # columna, el logo flotante los tapaba a la mitad o quedaban cortados
+    # (bug real reportado 2026-09-23 con capturas).
+    ws.row_dimensions[1].height = 30
     val(1, 2, "RAZÓN SOCIAL:", bold=True, color=TEAL_TEXTO)
-    val(1, 3, branding["nombre"], bold=True, color=TEAL_TEXTO)
+    ws.merge_cells(start_row=1, start_column=3, end_row=1, end_column=7)
+    c1 = val(1, 3, branding["nombre"], bold=True, color=TEAL_TEXTO, centrado=False)
+    c1.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
     val(2, 2, "RUC:", bold=True, color=TEAL_TEXTO)
-    val(2, 3, calc["ruc"], bold=True, color=TEAL_TEXTO)
+    val(2, 3, calc["ruc"], bold=True, color=TEAL_TEXTO, centrado=False)
+    ws.merge_cells(start_row=3, start_column=2, end_row=3, end_column=3)
     val(3, 2, "RÉGIMEN TRIBUTARIO:", bold=True, color=TEAL_TEXTO)
-    val(3, 3, branding.get("regimen_tributario") or "—", bold=True, color=TEAL_TEXTO)
+    ws.merge_cells(start_row=3, start_column=4, end_row=3, end_column=7)
+    val(3, 4, branding.get("regimen_tributario") or "—", bold=True, color=TEAL_TEXTO, centrado=False)
     _agregar_logo(ws, logo_bytes, "H1")
 
     val(5, 2, "PRELIQUIDACIÓN DE IMPUESTOS  MENSUAL", bold=True)
