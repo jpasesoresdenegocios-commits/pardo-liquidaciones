@@ -1,4 +1,5 @@
 import re
+from typing import Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -47,11 +48,25 @@ def generar_liquidacion(ruc: str, periodo: str):
 
 
 @app.get("/calcular/{ruc}/{periodo}")
-def calcular_json(ruc: str, periodo: str):
+def calcular_json(ruc: str, periodo: str, regimen: Optional[str] = None):
     """Igual que /liquidacion pero sin el Excel -- devuelve el dict crudo de
     igv_renta.calcular() como JSON. Pensado para ser consumido por scripts
     (ej. estimar_tributos_igv_renta_pdt.py) que necesitan el monto sin
-    descargar/parsear un xlsx por cada empresa/periodo."""
+    descargar/parsear un xlsx por cada empresa/periodo.
+
+    'regimen' es un query param OPCIONAL (?regimen=...) que, si se manda,
+    PISA el regimen_tributario de branding.py para esta llamada puntual.
+    Por que: branding.py (almacen_datos.empresas_conciliador) solo tiene el
+    campo 'regimen' cargado a mano para ~17 de las 67 empresas (se cargo una
+    sola vez el 2026-09-24); para el resto, igv_renta.calcular(regimen=None)
+    asume RMT por default -- correcto para la mayoria, pero confirmado
+    INCORRECTO para varias empresas sin tag cuyo propio historial de
+    tributos_periodo muestra pagos confirmados bajo el codigo de RER (3111)
+    o Regimen General (3031), no RMT (3121). estimar_tributos_igv_renta_pdt.py
+    resuelve el regimen real por empresa usando ese historial (mas confiable
+    que el tag manual) y lo manda aqui para no heredar el supuesto RMT por
+    default cuando hay evidencia mejor. Sin este parametro, el endpoint se
+    comporta exactamente igual que antes (usa branding.py)."""
     if not re.fullmatch(r"\d{11}", ruc):
         raise HTTPException(400, "RUC inválido (deben ser 11 dígitos)")
     if not re.fullmatch(r"\d{6}", periodo):
@@ -59,4 +74,5 @@ def calcular_json(ruc: str, periodo: str):
 
     empresa_id = _empresa_id(ruc)
     br = branding_mod.obtener_branding(ruc)
-    return igv_renta.calcular(ruc, empresa_id, periodo, regimen=br["regimen_tributario"])
+    regimen_usado = regimen or br["regimen_tributario"]
+    return igv_renta.calcular(ruc, empresa_id, periodo, regimen=regimen_usado)
