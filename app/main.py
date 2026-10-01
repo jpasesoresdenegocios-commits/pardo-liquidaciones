@@ -44,3 +44,19 @@ def generar_liquidacion(ruc: str, periodo: str):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{nombre_archivo}"'},
     )
+
+
+@app.get("/calcular/{ruc}/{periodo}")
+def calcular_json(ruc: str, periodo: str):
+    """Igual que /liquidacion pero sin el Excel -- devuelve el dict crudo de
+    igv_renta.calcular() como JSON. Pensado para ser consumido por scripts
+    (ej. estimar_tributos_igv_renta_pdt.py) que necesitan el monto sin
+    descargar/parsear un xlsx por cada empresa/periodo."""
+    if not re.fullmatch(r"\d{11}", ruc):
+        raise HTTPException(400, "RUC inválido (deben ser 11 dígitos)")
+    if not re.fullmatch(r"\d{6}", periodo):
+        raise HTTPException(400, "Período inválido (formato AAAAMM, ej. 202608)")
+
+    empresa_id = _empresa_id(ruc)
+    br = branding_mod.obtener_branding(ruc)
+    return igv_renta.calcular(ruc, empresa_id, periodo, regimen=br["regimen_tributario"])
